@@ -13,7 +13,7 @@ class _DatabaseManager:
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             # Use DATABASE_URL from env or fallback to hackstrom.db (to match db.py)
-            db_url = os.getenv("DATABASE_URL", "sqlite:///./hackstrom.db")
+            db_url = os.getenv("DATABASE_URL", "sqlite:///./data/hackstrom.db")
             cls._instance._engine = create_engine(
                 db_url,
                 echo=False,

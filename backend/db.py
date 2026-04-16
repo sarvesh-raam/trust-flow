@@ -10,7 +10,7 @@ from datetime import datetime
 
 from sqlmodel import Field as SQLField, SQLModel, create_engine
 
-DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./hackstrom.db")
+DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./data/hackstrom.db")
 
 engine = create_engine(
     DATABASE_URL,

@@ -1,58 +1,52 @@
-# Trust Flow: Autonomous Customs Compliance Agent
+# Trust Flow: Autonomous Customs Compliance Orchestrator
 
 **Hackstrom '26 | Track 3 | Autonomous Compliance Agent**
 
-An AI-powered agentic workflow that automates the verification and compliance of customs documentation, significantly reducing manual effort and human error in international trade.
+Trust Flow is an enterprise-grade agentic AI framework designed to automate the reconciliation and validation of international trade documentation. By leveraging advanced Large Language Models (LLMs) and structured layout analysis, the system identifies discrepancies in Commercial Invoices and Bills of Lading before they impact the supply chain.
 
-## 📄 Problem Statement
-The manual verification of customs documents—specifically **Commercial Invoices** and **Bills of Lading**—is a bottleneck in global logistics. Small discrepancies in gross weight, HS codes, or vessel names often go unnoticed until a border delay occurs, leading to high demurrage costs and regulatory fines.
+## Overview
+Manual document verification in logistics is prone to high error rates and operational bottlenecks. Trust Flow addresses this by implementing a deterministic, Multi-Agent System (MAS) that performs cross-document validation, HS code classification, and regulatory compliance auditing.
 
-## 💡 Solution: Agentic Reconciliation
-Trust Flow uses a **multi-node LangGraph pipeline** to:
-1.  **Ingest & Extract**: Uses `Docling` and `Instructor` to extract structured Pydantic models from "unstructured" PDFs.
-2.  **Semantic Retrieval**: Queries the **USITC HTS API** and local semantic caches to find precise HS codes.
-3.  **Autonomous Compliance**: Compares weights, dates, and names between inconsistent documents using an LLM (Llama 3.3).
-4.  **HITL (Human-in-the-Loop)**: Issues an **INTERRUPT** if a critical discrepancy is found, allowing a human operator to correct data before final declaration generation.
-5.  **Audit Trail**: Maintains a complete record of agent decisions and reasoning for regulatory transparency.
+![System Interface](docs/assets/document_ingest.jpeg)
 
-## 🛠 Tech Stack
-- **Frontend**: React (Vite), CSS3, Firebase Auth, Radix UI.
-- **Backend**: FastAPI (Python 3.11), SQLModel (SQLite).
-- **AI/ML**: LangGraph, Groq (Llama 3.3 70B), Docling (Doc Layout), Instructor.
-- **Infrastructure**: Docker Compose, Redis (Task Queue), Celery (Workers).
-- **Observability**: Grafana, Loki (Error Logging).
+## Core Capabilities
+- **Agentic Reconciliation**: A multi-node LangGraph pipeline that cross-references data points (Gross Weight, Vessel Names, Dates) across disparate document types.
+- **Deep Layout Extraction**: Integrated with Docling for high-fidelity OCR and structured data extraction from complex PDF layouts.
+- **Human-in-the-Loop (HITL)**: Automated pipeline interruption for manual override when critical discrepancies are detected.
+- **Regulatory Compliance**: Integrated with USITC HTS REST APIs for real-time Harmonized System code verification.
 
-## 🚀 How to Run Locally
+## Architecture and Workflow
+The system orchestrates a series of specialized nodes to ensure data integrity:
+1. **Ingestion Node**: Atomic upload of document pairs to encrypted storage.
+2. **Extraction Node**: LLM-driven field extraction into strict Pydantic models.
+3. **Validation Node**: Rules-based engine for deterministic delta calculations.
+4. **Audit Node**: Generation of a comprehensive audit trail for customs transparency.
 
-### 1. Prerequisites
-- Docker Desktop installed (with WSL 2 integration enabled for Windows users).
-- A **Groq API Key** from [console.groq.com](https://console.groq.com/).
-- A **Firebase Web App** project (for authentication).
+![Workflow Orchestration](docs/assets/workflow_orchestration.jpeg)
 
-### 2. Environment Setup
-Create a `.env` file in the root directory (or use the one provided):
-```bash
-# Groq Key for AI
-GROQ_API_KEY=your_groq_key_here
+## Technical Architecture
+- **Frontend**: React-based dashboard with a Bloomberg-optimized UI for high-density data monitoring.
+- **Backend**: FastAPI orchestrator utilizing SQLModel for persistent state management.
+- **Processing**: Distributed task execution via Celery and Redis.
+- **Observability**: Centralized logging and metrics via Grafana and Loki.
 
-# Firebase Keys for Frontend login
-VITE_FIREBASE_API_KEY=your_key
-...
-```
+## Installation and Deployment
 
-### 3. Launch with Docker
-```powershell
-# Build and start all services
-docker-compose up -d --build
-```
+### Prerequisites
+- Docker and Docker Compose
+- Groq API credentials
+- Firebase Authentication configuration
 
-### 4. Access the Application
-- **Frontend**: [http://localhost:3000](http://localhost:3000)
-- **API Docs**: [http://localhost:8000/docs](http://localhost:8000/docs)
-- **Flower (Tasks)**: [http://localhost:5555](http://localhost:5555)
-- **Grafana (Logs)**: [http://localhost:3001](http://localhost:3001)
+### Launch Procedure
+1. Configure environment variables in the root `.env` file.
+2. Execute the deployment command:
+   ```bash
+   docker-compose up -d --build
+   ```
+3. Access the dashboard via `http://localhost:3000`.
 
-## 📊 Benchmarks & Maintainability
-- **Singleton Architecture**: Database connections managed via a module-level singleton in `workflow_db.py`.
-- **Horizontal Scaling**: Celery workers can be scaled independently using `docker-compose up --scale worker1=3`.
-- **Modern Observability**: Real-time error streaming to Loki for rapid production debugging.
+## Maintainability and Scaling
+Trust Flow adheres to the following software engineering best practices:
+- **Singleton Database Connectivity**: Optimized resource management for SQLite sessions.
+- **MVC Architecture**: Clear separation between data models, business logic orchestration, and the user interface.
+- **Modular Scaling**: Independent scaling of AI Workers based on document throughput.

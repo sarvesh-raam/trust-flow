@@ -311,7 +311,17 @@ async def create_workflow(
         task_id=workflow_id  # Idempotent — same run_id won't re-queue
     )
     log.info("workflow.queued", workflow_id=workflow_id, task_id=task.id)
-    return {"run_id": workflow_id, "task_id": task.id, "status": "queued"}
+    # Return the full WorkflowResponse compatible object
+    return WorkflowResponse(
+        id=wf.id,
+        document_id=wf.document_id,
+        country=wf.country,
+        status=wf.status,
+        created_at=wf.created_at,
+        updated_at=wf.updated_at,
+        steps=wf.steps,
+        result=wf.result
+    )
 
 
 # NOTE: /status/{run_id} MUST be declared before /{workflow_id} so FastAPI

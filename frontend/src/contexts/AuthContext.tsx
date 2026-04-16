@@ -63,7 +63,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         fontSize:        "0.75rem",
         letterSpacing:   "0.12em",
       }}>
-        ◈ CUSTOMS DECL — Authenticating…
+        CUSTOMS DECLARATION — Authenticating…
       </div>
     );
   }

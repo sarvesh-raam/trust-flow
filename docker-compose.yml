@@ -7,13 +7,13 @@ services:
     environment:
       - GROQ_API_KEY=${GROQ_API_KEY}
       - GROQ_MODEL=${GROQ_MODEL:-llama-3.3-70b-versatile}
-      - DATABASE_URL=sqlite:///./hackstrom.db
+      - DATABASE_URL=sqlite:///./data/hackstrom.db
       - UPLOAD_DIR=uploads
       - REDIS_URL=redis://redis:6379/0
       - LOKI_URL=http://loki:3100/loki/api/v1/push
     volumes:
       - uploads_data:/app/uploads
-      - db_data:/app
+      - db_data:/app/data
     restart: unless-stopped
 
   frontend:

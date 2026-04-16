@@ -81,11 +81,21 @@ from routes.auth_routes import router as auth_router
 
 uploads_dir = os.path.join(os.path.dirname(__file__), "uploads")
 os.makedirs(uploads_dir, exist_ok=True)
+os.makedirs("data", exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
 
 # ---------------------------------------------------------------------------
 # Routers
 # ---------------------------------------------------------------------------
+from workflow_db import db as workflow_db_instance
+from sqlmodel import SQLModel
+try:
+    # Explicitly ensure all tables are created on startup
+    SQLModel.metadata.create_all(workflow_db_instance._engine)
+    print("[DB] Tables successfully verified/created at startup")
+except Exception as e:
+    print(f"[DB] Fatal error during startup table creation: {e}")
+
 app.include_router(auth_router)
 app.include_router(upload_router, prefix="/api/v1/upload", tags=["upload"], dependencies=[Depends(get_current_user)])
 app.include_router(workflow_router, prefix="/api/v1/workflow", tags=["workflow"], dependencies=[Depends(get_current_user)])
