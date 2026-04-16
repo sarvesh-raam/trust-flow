@@ -1,126 +1,58 @@
-# Hackstrom Track 3
+# Trust Flow: Autonomous Customs Compliance Agent
 
-Intelligent document processing platform with multi-country compliance rules, LLM-based field extraction, and a real-time workflow visualization UI.
+**Hackstrom '26 | Track 3 | Autonomous Compliance Agent**
 
----
+An AI-powered agentic workflow that automates the verification and compliance of customs documentation, significantly reducing manual effort and human error in international trade.
 
-## Architecture Overview
+## 📄 Problem Statement
+The manual verification of customs documents—specifically **Commercial Invoices** and **Bills of Lading**—is a bottleneck in global logistics. Small discrepancies in gross weight, HS codes, or vessel names often go unnoticed until a border delay occurs, leading to high demurrage costs and regulatory fines.
 
-```
-hackstrom-track3/
-├── backend/              # FastAPI service
-│   ├── main.py           # App factory, CORS, router registration
-│   ├── models.py         # Pydantic v2 schemas (Document, Workflow, Extraction, Validation)
-│   ├── graph.py          # LangGraph pipeline (ingest → extract → validate → store)
-│   └── routes/
-│       ├── upload.py     # POST /api/v1/upload/  — accept PDF/image, store to disk
-│       └── workflow.py   # POST /api/v1/workflow/ — trigger & poll LangGraph pipeline
-├── frontend/             # React 18 + Vite SPA
-│   └── src/
-│       ├── pages/
-│       │   ├── UploadPage.tsx    # Drag-and-drop upload form (react-hook-form + zod)
-│       │   └── WorkflowPage.tsx  # Live pipeline graph (@xyflow/react)
-│       ├── components/ui/        # shadcn/ui primitives (Button, Card, Badge)
-│       └── lib/
-│           ├── api.ts            # Typed axios wrappers + TS mirrors of backend models
-│           └── utils.ts          # cn() helper (clsx + tailwind-merge)
-└── country_rules/
-    ├── us.yaml           # US KYC/AML field requirements (SSN/EIN, OFAC, BSA 7-year retention)
-    └── uae.yaml          # UAE KYC/AML rules (Emirates ID, CBUAE, 5-year retention)
-```
+## 💡 Solution: Agentic Reconciliation
+Trust Flow uses a **multi-node LangGraph pipeline** to:
+1.  **Ingest & Extract**: Uses `Docling` and `Instructor` to extract structured Pydantic models from "unstructured" PDFs.
+2.  **Semantic Retrieval**: Queries the **USITC HTS API** and local semantic caches to find precise HS codes.
+3.  **Autonomous Compliance**: Compares weights, dates, and names between inconsistent documents using an LLM (Llama 3.3).
+4.  **HITL (Human-in-the-Loop)**: Issues an **INTERRUPT** if a critical discrepancy is found, allowing a human operator to correct data before final declaration generation.
+5.  **Audit Trail**: Maintains a complete record of agent decisions and reasoning for regulatory transparency.
 
----
+## 🛠 Tech Stack
+- **Frontend**: React (Vite), CSS3, Firebase Auth, Radix UI.
+- **Backend**: FastAPI (Python 3.11), SQLModel (SQLite).
+- **AI/ML**: LangGraph, Groq (Llama 3.3 70B), Docling (Doc Layout), Instructor.
+- **Infrastructure**: Docker Compose, Redis (Task Queue), Celery (Workers).
+- **Observability**: Grafana, Loki (Error Logging).
 
-## Data Flow
+## 🚀 How to Run Locally
 
-```
-Browser
-  │
-  │ multipart/form-data (PDF/image + country)
-  ▼
-POST /api/v1/upload/
-  │  saves file to disk, creates DocumentRecord (pending)
-  ▼
-POST /api/v1/workflow/
-  │  spawns BackgroundTask → LangGraph pipeline
-  ▼
-  ┌──────────────────────────────────────────────────────┐
-  │  LangGraph Document Pipeline (graph.py)              │
-  │                                                      │
-  │  ingest ──► extract ──► validate ──► store ──► END   │
-  │                                                      │
-  │  ingest   : Docling / PyMuPDF → raw_text + images    │
-  │  extract  : Instructor + LLM → structured fields     │
-  │  validate : country_rules/<country>.yaml checks      │
-  │  store    : ChromaDB (embeddings) + SQLModel (DB)    │
-  └──────────────────────────────────────────────────────┘
-  │
-  ▼
-GET /api/v1/workflow/{id}   ← polled every 3 s by React Query
-  │
-  ▼
-WorkflowPage (ReactFlow graph, nodes colour green when complete)
-```
+### 1. Prerequisites
+- Docker Desktop installed (with WSL 2 integration enabled for Windows users).
+- A **Groq API Key** from [console.groq.com](https://console.groq.com/).
+- A **Firebase Web App** project (for authentication).
 
----
-
-## Tech Stack
-
-| Layer | Technology |
-|---|---|
-| API framework | FastAPI + Uvicorn |
-| Data validation | Pydantic v2 |
-| AI orchestration | LangGraph |
-| LLM structured output | Instructor |
-| Document parsing | Docling, PyMuPDF, Pillow, OpenCV |
-| Vector store | ChromaDB + sentence-transformers |
-| SQL ORM | SQLModel |
-| HTTP client | HTTPX + Tenacity (retries) |
-| Observability | structlog, OpenTelemetry SDK, Arize Phoenix |
-| Frontend | React 18, TypeScript, Vite |
-| Styling | Tailwind CSS + shadcn/ui |
-| State management | TanStack Query v5 |
-| Forms | react-hook-form + Zod |
-| PDF viewer | react-pdf |
-| Pipeline graph | @xyflow/react |
-
----
-
-## Getting Started
-
-### Backend
-
+### 2. Environment Setup
+Create a `.env` file in the root directory (or use the one provided):
 ```bash
-cd backend
-python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-uvicorn main:app --reload
-# API at http://localhost:8000 — docs at http://localhost:8000/docs
+# Groq Key for AI
+GROQ_API_KEY=your_groq_key_here
+
+# Firebase Keys for Frontend login
+VITE_FIREBASE_API_KEY=your_key
+...
 ```
 
-### Frontend
-
-```bash
-cd frontend
-npm install
-npm run dev
-# UI at http://localhost:5173
+### 3. Launch with Docker
+```powershell
+# Build and start all services
+docker-compose up -d --build
 ```
 
-### Country Rules
+### 4. Access the Application
+- **Frontend**: [http://localhost:3000](http://localhost:3000)
+- **API Docs**: [http://localhost:8000/docs](http://localhost:8000/docs)
+- **Flower (Tasks)**: [http://localhost:5555](http://localhost:5555)
+- **Grafana (Logs)**: [http://localhost:3001](http://localhost:3001)
 
-YAML files in `country_rules/` are loaded at runtime by the `validate` node in `graph.py`. Add a new file (e.g. `uk.yaml`) and extend the `CountryCode` enum in `models.py` to support additional jurisdictions.
-
----
-
-## Environment Variables (backend)
-
-| Variable | Purpose | Example |
-|---|---|---|
-| `OPENAI_API_KEY` | LLM calls via Instructor | `sk-...` |
-| `DATABASE_URL` | SQLModel connection string | `sqlite:///./dev.db` |
-| `CHROMA_HOST` | ChromaDB host | `localhost` |
-| `CHROMA_PORT` | ChromaDB port | `8001` |
-| `PHOENIX_ENDPOINT` | Arize Phoenix collector | `http://localhost:6006` |
-
-Copy `.env.example` (create one) and fill in values before running.
+## 📊 Benchmarks & Maintainability
+- **Singleton Architecture**: Database connections managed via a module-level singleton in `workflow_db.py`.
+- **Horizontal Scaling**: Celery workers can be scaled independently using `docker-compose up --scale worker1=3`.
+- **Modern Observability**: Real-time error streaming to Loki for rapid production debugging.

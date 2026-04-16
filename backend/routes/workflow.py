@@ -10,7 +10,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, status
 from pydantic import BaseModel, Field
 
 from db import UploadRunRow, engine
-from graph import GraphState, NodeInterrupt, document_graph
+# from graph import GraphState, NodeInterrupt, document_graph  # Moved inside functions
 from sqlmodel import Session as DBSession
 from models import (
     CountryCode,
@@ -180,6 +180,7 @@ def _state_get(state: Any, key: str, default: Any = None) -> Any:
 def _handle_blocked(wf: WorkflowRecord, workflow_id: str, msg: str, config: dict) -> None:
     """Shared logic for setting wf to BLOCKED after a NodeInterrupt."""
     wf.status = WorkflowStatus.BLOCKED
+    from graph import document_graph
     saved_state = document_graph.get_state(config)
     issues: list[dict] = []
     if saved_state and getattr(saved_state, "values", None):
@@ -199,6 +200,7 @@ async def _run_graph(
     bl_pdf_path: str,
 ) -> None:
     """Background task: run the LangGraph pipeline and update workflow state."""
+    from graph import GraphState, NodeInterrupt, document_graph
     wf = _workflows[workflow_id]
     wf.status = WorkflowStatus.RUNNING
     wf.updated_at = datetime.utcnow()
@@ -265,7 +267,6 @@ async def _run_graph(
 
 @router.post(
     "/",
-    response_model=WorkflowResponse,
     status_code=status.HTTP_202_ACCEPTED,
     summary="Start a processing workflow for a document pair",
 )
@@ -302,17 +303,15 @@ async def create_workflow(
             fallback_bl=bl_path,
         )
 
-    background_tasks.add_task(
-        _run_graph,
-        workflow_id=workflow_id,
-        document_id=str(body.document_id),
-        country=body.country.value,
-        invoice_pdf_path=invoice_path,
-        bl_pdf_path=bl_path,
-    )
+    from tasks import run_compliance_pipeline
 
-    log.info("workflow.queued", workflow_id=workflow_id, document_id=str(body.document_id))
-    return WorkflowResponse(**wf.model_dump())
+    # Dispatch to Redis queue — worker picks it up atomically
+    task = run_compliance_pipeline.apply_async(
+        args=[workflow_id, invoice_path, bl_path, body.country.value],
+        task_id=workflow_id  # Idempotent — same run_id won't re-queue
+    )
+    log.info("workflow.queued", workflow_id=workflow_id, task_id=task.id)
+    return {"run_id": workflow_id, "task_id": task.id, "status": "queued"}
 
 
 # NOTE: /status/{run_id} MUST be declared before /{workflow_id} so FastAPI
@@ -424,6 +423,7 @@ async def resume_workflow(
     config = {"configurable": {"thread_id": run_id}}
     
     # Update state synchronously here
+    from graph import document_graph
     current_state = document_graph.get_state(config)
     if not getattr(current_state, "values", None):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Graph state not found")
@@ -482,6 +482,7 @@ async def resume_workflow(
 
 
 async def _resume_graph(workflow_id: str) -> None:
+    from graph import document_graph, NodeInterrupt
     wf = _workflows[workflow_id]
     config = {"configurable": {"thread_id": workflow_id}}
     try:

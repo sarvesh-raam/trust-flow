@@ -9,7 +9,7 @@ import structlog
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 from sqlmodel import Session
 
-from db import UploadRunRow, engine
+from workflow_db import db
 from models import (
     CountryCode,
     DocumentRecord,
@@ -76,7 +76,8 @@ async def upload_documents(
         await fh.write(bl_content)
 
     # Persist paths so the workflow route can find them
-    with Session(engine) as session:
+    with db.session() as session:
+        from db import UploadRunRow
         row = UploadRunRow(
             run_id=run_id,
             invoice_path=str(inv_dest),
@@ -86,6 +87,7 @@ async def upload_documents(
         )
         session.add(row)
         session.commit()
+        session.refresh(row)
 
     log.info(
         "documents.uploaded",
@@ -139,8 +141,9 @@ async def get_document(document_id: str) -> DocumentResponse:
     summary="List all uploads",
 )
 async def list_documents() -> list[DocumentResponse]:
-    from sqlmodel import select
-    with Session(engine) as session:
+    with db.session() as session:
+        from db import UploadRunRow
+        from sqlmodel import select
         rows = session.exec(select(UploadRunRow)).all()
     return [
         DocumentResponse(
