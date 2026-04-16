@@ -1,4 +1,4 @@
-# Release v1.0.0 — Hackstrom '26 Production Ready
+# Release v1.0.0 — Hackstrom '26 Production Ready.
 
 This is the initial production-ready release of **Trust Flow**, submitted for Hackstrom Track 3.
 
