@@ -45,8 +45,11 @@ The system orchestrates a series of specialized nodes to ensure data integrity:
    ```
 3. Access the dashboard via `http://localhost:3000`.
 
+*Note: For manual testing and demo scripts, please refer to the `/scripts` directory.* [start_demo.bat](scripts/start_demo.bat)
+
 ## Maintainability and Scaling
 Trust Flow adheres to the following software engineering best practices:
 - **Singleton Database Connectivity**: Optimized resource management for SQLite sessions.
 - **MVC Architecture**: Clear separation between data models, business logic orchestration, and the user interface.
+- **Resource Management**: Core business rules and test datasets are partitioned in the `/resources` directory.
 - **Modular Scaling**: Independent scaling of AI Workers based on document throughput.
