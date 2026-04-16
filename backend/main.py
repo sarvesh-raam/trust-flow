@@ -26,6 +26,24 @@ structlog.configure(
         structlog.dev.ConsoleRenderer(),
     ]
 )
+
+import os
+import logging
+
+loki_url = os.getenv("LOKI_URL")
+if loki_url:
+    try:
+        import logging_loki
+        loki_handler = logging_loki.LokiHandler(
+            url=loki_url,
+            tags={"service": "hackstrom-backend", "event": "hackstrom26"},
+            version="1",
+        )
+        logging.getLogger().addHandler(loki_handler)
+    except Exception as e:
+        print(f"Loki handler failed to init: {e} — continuing without Loki")
+
+logger = logging.getLogger("hackstrom")
 log = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
