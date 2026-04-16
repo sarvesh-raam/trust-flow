@@ -44,7 +44,7 @@ Trust Flow implements an autonomous Multi-Agent System (MAS) that:
 ### 1. Environment Configuration
 Create a `.env` file in the root directory with your `GROQ_API_KEY` and Firebase credentials.
 
-### 2. Deployment via Docker
+### 2. Deployment via Docker.
 ```bash
 docker-compose up -d --build
 ```
