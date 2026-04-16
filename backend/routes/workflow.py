@@ -303,37 +303,17 @@ async def create_workflow(
             fallback_bl=bl_path,
         )
 
-    # Try Celery/Redis first; fall back to FastAPI BackgroundTasks when Redis
-    # is not available (local dev / demo without docker-compose).
-    try:
-        from tasks import run_compliance_pipeline
-        task = run_compliance_pipeline.apply_async(
-            args=[workflow_id, invoice_path, bl_path, body.country.value],
-            task_id=workflow_id,
-        )
-        log.info("workflow.queued_celery", workflow_id=workflow_id, task_id=task.id)
-    except Exception as celery_err:
-        log.warning("workflow.celery_unavailable", error=str(celery_err), fallback="background_tasks")
-        background_tasks.add_task(
-            _run_graph,
-            workflow_id=workflow_id,
-            document_id=run_id_str,
-            country=body.country.value,
-            invoice_pdf_path=invoice_path,
-            bl_pdf_path=bl_path,
-        )
-        log.info("workflow.queued_background", workflow_id=workflow_id)
-    # Return the full WorkflowResponse compatible object
-    return WorkflowResponse(
-        id=wf.id,
-        document_id=wf.document_id,
-        country=wf.country,
-        status=wf.status,
-        created_at=wf.created_at,
-        updated_at=wf.updated_at,
-        steps=wf.steps,
-        result=wf.result
+    background_tasks.add_task(
+        _run_graph,
+        workflow_id=workflow_id,
+        document_id=run_id_str,
+        country=body.country.value,
+        invoice_pdf_path=invoice_path,
+        bl_pdf_path=bl_path,
     )
+
+    log.info("workflow.queued", workflow_id=workflow_id, document_id=run_id_str)
+    return WorkflowResponse(**wf.model_dump())
 
 
 # NOTE: /status/{run_id} MUST be declared before /{workflow_id} so FastAPI
