@@ -16,8 +16,9 @@ from typing import Any
 import structlog
 from pydantic import BaseModel, Field
 
+from llm_client import get_active_chat_model as _active_model
+from llm_client import get_instructor_client as get_client
 from models import WorkflowState
-from nodes.field_extract import _active_model, get_client
 
 log = structlog.get_logger(__name__)
 

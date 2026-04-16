@@ -6,11 +6,8 @@ import { useQuery } from "@tanstack/react-query";
 import { getRunStatus, type BBoxEntry } from "@/lib/api";
 import { getPDF, storePDF, clearPDF } from "@/lib/pdfStore";
 
-// Configure pdf.js worker (Vite resolves the URL at build time).
-pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-  "pdfjs-dist/build/pdf.worker.min.mjs",
-  import.meta.url,
-).toString();
+// Configure pdf.js worker to use the reliable unpkg CDN for production viewing.
+pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
 // ── Colour palette — one colour per invoice field ─────────────────────────────
 const FIELD_COLORS: Record<string, string> = {
@@ -57,6 +54,19 @@ export default function PDFViewerPanel({
   const replaceRef   = useRef<HTMLInputElement>(null);
 
   const [pdfLoadError, setPdfLoadError] = useState<string | null>(null);
+  const [renderWidth, setRenderWidth] = useState(pageWidth);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver((entries) => {
+      if (entries[0] && entries[0].contentRect.width > 0) {
+        setRenderWidth(Math.min(entries[0].contentRect.width, pageWidth));
+      }
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [pageWidth]);
 
   const handleReplace = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -309,10 +319,11 @@ export default function PDFViewerPanel({
         ref={containerRef}
         style={{
           position:        "relative",
-          display:         "inline-block",
+          display:         "block",
           border:          "1px solid #1e293b",
           overflow:        "hidden",
-          width:           pageWidth,
+          width:           "100%",
+          maxWidth:        pageWidth,
           backgroundColor: "var(--bg-primary)",
         }}
       >
@@ -359,7 +370,7 @@ export default function PDFViewerPanel({
           ) : (
             <Page
               pageNumber={pageNumber}
-              width={pageWidth}
+              width={renderWidth}
               renderTextLayer
               renderAnnotationLayer={false}
               onLoadSuccess={(page) => {

@@ -14,6 +14,7 @@ import uvicorn
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from prometheus_fastapi_instrumentator import Instrumentator
 
 from routes.upload import router as upload_router
 from routes.workflow import router as workflow_router
@@ -43,9 +44,10 @@ if loki_url:
         )
         logging.getLogger().addHandler(loki_handler)
     except Exception as e:
-        print(f"Loki handler failed to init: {e} — continuing without Loki")
+        # We define log below, but can't use it yet if import failed. 
+        # But we'll use a direct print for this one edge case.
+        print(f"Loki handler failed: {e}")
 
-logger = logging.getLogger("hackstrom")
 log = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -59,6 +61,14 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
+from prometheus_fastapi_instrumentator import Instrumentator
+Instrumentator(
+    should_group_status_codes=True,
+    should_ignore_untemplated=True,
+    should_instrument_requests_inprogress=True,
+    excluded_handlers=["/health", "/metrics"],
+).instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -70,6 +80,9 @@ app.add_middleware(
         "http://127.0.0.1:5175",
         "http://localhost:3000",
         "http://127.0.0.1:3000",
+        # Prometheus / Grafana — allow scraping /metrics from monitoring stack
+        "http://localhost:9090",
+        "http://localhost:3001",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -84,14 +97,7 @@ os.makedirs(uploads_dir, exist_ok=True)
 os.makedirs("data", exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
 
-from workflow_db import db as workflow_db_instance
-from sqlmodel import SQLModel
-try:
-    # Explicitly ensure all tables are created on startup
-    SQLModel.metadata.create_all(workflow_db_instance._engine)
-    print("[DB] Tables successfully verified/created at startup")
-except Exception as e:
-    print(f"[DB] Fatal error during startup table creation: {e}")
+
 
 # ---------------------------------------------------------------------------
 # Routers

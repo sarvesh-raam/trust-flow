@@ -8,11 +8,18 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 REFRESH_TOKEN_EXPIRE_DAYS = 7
 
+import hmac
+import hashlib
 
 def _hash_pii(value: str) -> str:
-    """Hash PII before storing — never expose raw email in tokens or logs"""
-    import hashlib
-    return hashlib.sha256(value.encode()).hexdigest()[:16]
+    """Hash PII before storing — never expose raw email in tokens or logs.
+    PII SHIELD: raw email never stored in token or logs — only HMAC-SHA256 hash
+    Uses HMAC-SHA256 with SECRET_KEY for deterministic but salted hashing."""
+    return hmac.new(
+        SECRET_KEY.encode(), 
+        value.encode(), 
+        hashlib.sha256
+    ).hexdigest()[:16]
 
 def create_access_token(user_id: str, email: str) -> str:
     payload = {
@@ -22,6 +29,10 @@ def create_access_token(user_id: str, email: str) -> str:
         "exp": datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
         "iat": datetime.utcnow()
     }
+    # Security invariant: Raw email must never leak into the signed payload
+    assert "id" not in payload, "PII ID leak detected"
+    assert len(payload["email"]) == 16, "PII hash length mismatch — potentially raw email leak"
+    
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
 def create_refresh_token(user_id: str) -> str:

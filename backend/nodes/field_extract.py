@@ -1,71 +1,22 @@
 """nodes/field_extract.py — LLM-based structured extraction via Instructor.
 
-Uses Groq (llama-3.3-70b) when GROQ_API_KEY is set, otherwise falls back to a
-locally-hosted vLLM server (Qwen2.5-7B-Instruct at http://localhost:8000/v1).
-
-The Instructor library wraps the OpenAI-compatible chat endpoint and retries
-automatically until the response validates against the Pydantic response_model
-(up to max_retries attempts).
+Client selection (organizer key → Groq → vLLM) is delegated to llm_client.py.
+This module owns only the prompt templates and the node function itself.
 """
 from __future__ import annotations
 
 import json
-import logging
-import os
-from functools import lru_cache
+import re
 from typing import Any
 
-import instructor
 import structlog
 
-from models import BillOfLading, InvoiceDocument, WorkflowState
+from llm_client import get_active_chat_model as _active_model
+from llm_client import get_instructor_client as get_client
+from llm_instrumented import tracked_instructor_create
+from models import BillOfLading, InvoiceDocument, LineItem, WorkflowState
 
 log = structlog.get_logger(__name__)
-
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-GROQ_MODEL_DEFAULT  = "llama-3.3-70b-versatile"
-VLLM_MODEL_DEFAULT  = "Qwen/Qwen2.5-7B-Instruct"
-VLLM_BASE_URL_DEFAULT = "http://localhost:8001/v1"
-
-# ---------------------------------------------------------------------------
-# Client factory (cached — one client per process)
-# ---------------------------------------------------------------------------
-
-
-@lru_cache(maxsize=1)
-def get_client() -> Any:
-    """Return a patched Instructor client.
-
-    Priority:
-      1. GROQ_API_KEY set → Groq cloud (llama-3.3-70b-versatile)
-      2. Otherwise        → local vLLM (OpenAI-compatible endpoint)
-    """
-    groq_key = os.getenv("GROQ_API_KEY", "").strip()
-    if groq_key:
-        from groq import Groq  # noqa: PLC0415
-
-        log.info("field_extract.client", backend="groq", model=os.getenv("GROQ_MODEL", GROQ_MODEL_DEFAULT))
-        return instructor.from_groq(Groq(api_key=groq_key), mode=instructor.Mode.JSON)
-
-    # Local vLLM fallback
-    from openai import OpenAI  # noqa: PLC0415
-
-    base_url = os.getenv("VLLM_BASE_URL", VLLM_BASE_URL_DEFAULT)
-    log.info("field_extract.client", backend="vllm", base_url=base_url, model=os.getenv("VLLM_MODEL", VLLM_MODEL_DEFAULT))
-    return instructor.from_openai(
-        OpenAI(base_url=base_url, api_key="local"),
-        mode=instructor.Mode.JSON,
-    )
-
-
-def _active_model() -> str:
-    """Return the model string appropriate for the active backend."""
-    if os.getenv("GROQ_API_KEY", "").strip():
-        return os.getenv("GROQ_MODEL", GROQ_MODEL_DEFAULT)
-    return os.getenv("VLLM_MODEL", VLLM_MODEL_DEFAULT)
 
 
 # ---------------------------------------------------------------------------
@@ -73,9 +24,10 @@ def _active_model() -> str:
 # ---------------------------------------------------------------------------
 
 INVOICE_PROMPT = """\
-You are a customs document extraction specialist.
+You are processing a customs document. Extract ALL fields with precision.
+If a field is ambiguous, prefer the value that matches standard trade document formats.
 
-Extract all fields from the commercial invoice text below into the exact JSON \
+Extract all fields from the commercial invoice below into the exact JSON \
 schema provided. Rules:
 - Dates must be in ISO-8601 format (YYYY-MM-DD). If the day is missing, use 01.
 - Monetary amounts are plain floats (no currency symbols).
@@ -83,24 +35,25 @@ schema provided. Rules:
 - For line_items, extract every row; do not skip or merge rows.
 - hs_code and hs_candidates may be left empty — they are filled by a later node.
 
-Invoice text:
+Invoice text (OCR):
 {text}
 
-Tables detected (list-of-dicts, one entry per table row):
+Tables detected (list-of-dicts):
 {tables}
 """
 
 BL_PROMPT = """\
-You are a customs document extraction specialist.
+You are processing a customs document. Extract ALL fields with precision.
+If a field is ambiguous, prefer the value that matches standard trade document formats.
 
-Extract all fields from the Bill of Lading text below into the exact JSON \
+Extract all fields from the Bill of Lading below into the exact JSON \
 schema provided. Rules:
 - Gross weight must be in kilograms. Convert if the document uses lbs (÷ 2.205).
 - If a field is absent from the document, use the schema default.
 - For line_items, extract every cargo description row.
 - hs_code and hs_candidates may be left empty.
 
-Bill of Lading text:
+Bill of Lading text (OCR):
 {text}
 
 Tables detected:
@@ -123,6 +76,109 @@ def _format_tables(tables: list[Any] | None) -> str:
         return str(tables)
 
 
+def _search(patterns: list[str], text: str) -> str:
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE | re.MULTILINE)
+        if match:
+            return match.group(1).strip()
+    return ""
+
+
+def _search_float(patterns: list[str], text: str) -> float:
+    raw = _search(patterns, text)
+    if not raw:
+        return 0.0
+    try:
+        return float(raw.replace(",", "").strip())
+    except ValueError:
+        return 0.0
+
+
+def _extract_invoice_line_items(text: str) -> list[LineItem]:
+    items: list[LineItem] = []
+    pattern = re.compile(
+        r"^\s*\d+\s+(.+?)\s{2,}(\d+(?:\.\d+)?)\s+(?:[A-Z]{3}\s*)?([\d,]+(?:\.\d+)?)\s+(?:[A-Z]{3}\s*)?([\d,]+(?:\.\d+)?)\s*$",
+        flags=re.MULTILINE,
+    )
+    for match in pattern.finditer(text):
+        description, quantity, unit_price, total = match.groups()
+        try:
+            items.append(
+                LineItem(
+                    description=description.strip(),
+                    quantity=float(quantity.replace(",", "")),
+                    unit_price=float(unit_price.replace(",", "")),
+                )
+            )
+        except ValueError:
+            continue
+
+    return items
+
+
+def _extract_bl_line_items(text: str) -> list[LineItem]:
+    description = _search(
+        [
+            r"Description\s*:\s*([^\n]+)",
+            r"Cargo Description\s*:\s*([^\n]+)",
+        ],
+        text,
+    )
+    if not description:
+        return []
+    return [LineItem(description=description)]
+
+
+def _fallback_invoice(state: WorkflowState) -> InvoiceDocument:
+    text = state.invoice_ocr_text or ""
+    currency = _search([r"Currency\s*:\s*([A-Z]{3})"], text) or "USD"
+    return InvoiceDocument(
+        invoice_number=_search(
+            [r"Invoice Number\s*:\s*([^\n]+)", r"Invoice No\.?\s*:\s*([^\n]+)"],
+            text,
+        ),
+        date=_search([r"Date\s*:\s*([0-9]{4}-[0-9]{2}-[0-9]{2})"], text),
+        seller=_search([r"Seller\s*:\s*([^\n]+)"], text),
+        buyer=_search([r"Buyer\s*:\s*([^\n]+)", r"Consignee\s*:\s*([^\n]+)"], text),
+        line_items=_extract_invoice_line_items(text),
+        total_amount=_search_float(
+            [
+                r"Total Amount\s*:\s*(?:[A-Z]{3}\s*)?([\d,]+(?:\.\d+)?)",
+                r"Total\s*:\s*(?:[A-Z]{3}\s*)?([\d,]+(?:\.\d+)?)",
+            ],
+            text,
+        ),
+        currency=currency,
+        gross_weight_kg=_search_float(
+            [r"Gross Weight\s*:\s*([\d,]+(?:\.\d+)?)\s*(?:kg|kgs|kilograms)?"],
+            text,
+        ),
+    )
+
+
+def _fallback_bill_of_lading(state: WorkflowState) -> BillOfLading:
+    text = state.bl_ocr_text or ""
+    return BillOfLading(
+        bl_number=_search(
+            [r"B/L Number\s*:\s*([^\n]+)", r"BL Number\s*:\s*([^\n]+)"],
+            text,
+        ),
+        vessel=_search(
+            [r"Vessel(?:\s*/\s*Voyage)?\s*:\s*([^\n]+)", r"Vessel\s*:\s*([^\n]+)"],
+            text,
+        ),
+        port_of_loading=_search([r"Port of Loading\s*:\s*([^\n]+)"], text),
+        port_of_discharge=_search([r"Port of Discharge\s*:\s*([^\n]+)"], text),
+        gross_weight_kg=_search_float(
+            [r"Gross Weight\s*:\s*([\d,]+(?:\.\d+)?)\s*(?:kg|kgs|kilograms)?"],
+            text,
+        ),
+        consignee=_search([r"Consignee\s*:\s*([^\n]+)"], text),
+        shipper=_search([r"Shipper\s*:\s*([^\n]+)"], text),
+        line_items=_extract_bl_line_items(text),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Public node function  (synchronous — called via run_in_executor in graph.py)
 # ---------------------------------------------------------------------------
@@ -131,40 +187,55 @@ def _format_tables(tables: list[Any] | None) -> str:
 def field_extract_node(state: WorkflowState) -> WorkflowState:
     """Call the LLM twice (invoice + B/L) and populate state.invoice / state.bill_of_lading.
 
-    This is intentionally *synchronous* because Instructor's sync client is
-    simpler to test and because graph.py already wraps every sync node with
-    asyncio.get_event_loop().run_in_executor(), keeping the event loop free.
-
-    Raises:
-        instructor.exceptions.InstructorRetryException: when the LLM fails to
-            produce a valid schema after max_retries attempts. graph.py catches
-            this and marks the run as failed.
+    Uses Vision (multimodal) if images are available in the state, otherwise 
+    falls back to text-only OCR extraction.
     """
-    client = get_client()
-    model  = _active_model()
+    try:
+        client = get_client()
+        model = _active_model()
+    except Exception as exc:
+        log.warning("field_extract.llm_unavailable_fallback", error=str(exc))
+        state.invoice = _fallback_invoice(state)
+        state.bill_of_lading = _fallback_bill_of_lading(state)
+        return state
+
     max_retries = 3
 
-    # ── Invoice ──────────────────────────────────────────────────────────────
+    # ── 1. Invoice ───────────────────────────────────────────────────────────
     inv_text   = state.invoice_ocr_text or ""
     inv_tables = _format_tables(state.invoice_tables)
+    inv_prompt = INVOICE_PROMPT.format(text=inv_text, tables=inv_tables)
 
-    log.info(
-        "field_extract.invoice_start",
-        model=model,
-        text_chars=len(inv_text),
-    )
+    inv_messages = [{"role": "user", "content": inv_prompt}]
 
-    invoice: InvoiceDocument = client.chat.completions.create(
-        model=model,
-        response_model=InvoiceDocument,
-        messages=[
+    # Ingest Vision context if available
+    if state.invoice_page_image:
+        log.info("field_extract.vision_enabled", doc="invoice", bytes=len(state.invoice_page_image))
+        inv_messages[0]["content"] = [
+            {"type": "text", "text": inv_prompt},
             {
-                "role": "user",
-                "content": INVOICE_PROMPT.format(text=inv_text, tables=inv_tables),
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/jpeg;base64,{state.invoice_page_image}",
+                    "detail": "high"
+                }
             }
-        ],
-        max_retries=max_retries,
-    )
+        ]
+
+    log.info("field_extract.invoice_start", model=model, vision=bool(state.invoice_page_image))
+
+    try:
+        invoice: InvoiceDocument = tracked_instructor_create(
+            client,
+            model=model,
+            call_type="extraction",
+            response_model=InvoiceDocument,
+            messages=inv_messages,
+            max_retries=max_retries,
+        )
+    except Exception as exc:
+        log.warning("field_extract.invoice_fallback", error=str(exc))
+        invoice = _fallback_invoice(state)
 
     log.info(
         "field_extract.invoice_done",
@@ -173,27 +244,40 @@ def field_extract_node(state: WorkflowState) -> WorkflowState:
         total_amount=invoice.total_amount,
     )
 
-    # ── Bill of Lading ────────────────────────────────────────────────────────
+    # ── 2. Bill of Lading ────────────────────────────────────────────────────
     bl_text   = state.bl_ocr_text or ""
     bl_tables = _format_tables(state.bl_tables)
+    bl_prompt = BL_PROMPT.format(text=bl_text, tables=bl_tables)
 
-    log.info(
-        "field_extract.bl_start",
-        model=model,
-        text_chars=len(bl_text),
-    )
+    bl_messages = [{"role": "user", "content": bl_prompt}]
 
-    bill_of_lading: BillOfLading = client.chat.completions.create(
-        model=model,
-        response_model=BillOfLading,
-        messages=[
+    if state.bl_page_image:
+        log.info("field_extract.vision_enabled", doc="bl", bytes=len(state.bl_page_image))
+        bl_messages[0]["content"] = [
+            {"type": "text", "text": bl_prompt},
             {
-                "role": "user",
-                "content": BL_PROMPT.format(text=bl_text, tables=bl_tables),
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/jpeg;base64,{state.bl_page_image}",
+                    "detail": "high"
+                }
             }
-        ],
-        max_retries=max_retries,
-    )
+        ]
+
+    log.info("field_extract.bl_start", model=model, vision=bool(state.bl_page_image))
+
+    try:
+        bill_of_lading: BillOfLading = tracked_instructor_create(
+            client,
+            model=model,
+            call_type="extraction",
+            response_model=BillOfLading,
+            messages=bl_messages,
+            max_retries=max_retries,
+        )
+    except Exception as exc:
+        log.warning("field_extract.bl_fallback", error=str(exc))
+        bill_of_lading = _fallback_bill_of_lading(state)
 
     log.info(
         "field_extract.bl_done",

@@ -5,6 +5,7 @@ import WorkflowPage from "@/pages/WorkflowPage";
 import DeclarationPage from "@/pages/DeclarationPage";
 import LoginPage from "@/pages/LoginPage";
 import { useAuth } from "@/contexts/AuthContext";
+import { useDemoMode } from "@/demo/DemoContext";
 import { signOutUser } from "@/lib/firebase";
 
 // ── ErrorBoundary ──────────────────────────────────────────────────────────────
@@ -214,8 +215,15 @@ function UserMenu() {
 // ── Root App ──────────────────────────────────────────────────────────────────
 export default function App() {
   const { user } = useAuth();
-  const [tab, setTab] = useState<Tab>("upload");
+  const { isDemoMode } = useDemoMode();
+  const [tab, setTab] = useState<Tab>(isDemoMode ? "workflows" : "upload");
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isDemoMode && tab === "upload") {
+      setTab("workflows");
+    }
+  }, [isDemoMode, tab]);
 
   const handleViewDeclaration = (runId: string) => {
     setSelectedRunId(runId);

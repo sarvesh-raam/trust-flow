@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { api } from "../lib/api";
-import { auth, onAuthStateChanged, type User } from "../lib/firebase";
+import { auth, isFirebaseConfigured, onAuthStateChanged, type User } from "../lib/firebase";
 
 interface AuthContextType {
   user: User | null;
@@ -27,6 +27,33 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    const isDemoMode = new URLSearchParams(window.location.search).get("demo") === "true";
+    if (isDemoMode) {
+      setUser({
+        displayName: "Demo Operator",
+        email: "demo@local",
+        photoURL: null,
+      } as User);
+      setLoading(false);
+      return () => undefined;
+    }
+
+    const guestSession = localStorage.getItem("guest_session");
+    if (guestSession) {
+      try {
+        setUser(JSON.parse(guestSession) as User);
+        setLoading(false);
+        return () => undefined;
+      } catch {
+        localStorage.removeItem("guest_session");
+      }
+    }
+
+    if (!isFirebaseConfigured) {
+      setLoading(false);
+      return () => undefined;
+    }
+
     const unsubscribe = onAuthStateChanged(auth, async (u) => {
       if (u) {
         // Exchange Firebase ID token for backend JWT (non-blocking — failure keeps user logged in)
@@ -43,7 +70,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   // Auto-refresh backend JWT when Firebase token renews (every ~55 min)
   useEffect(() => {
-    if (!user) return;
+    const isDemoMode = new URLSearchParams(window.location.search).get("demo") === "true";
+    if (!user || isDemoMode || Boolean(localStorage.getItem("guest_session"))) return;
     const interval = setInterval(async () => {
       await exchangeFirebaseToken(user);
     }, 55 * 60 * 1000);

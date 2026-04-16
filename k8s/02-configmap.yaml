@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: trustflow-config
+  namespace: trust-flow
+data:
+  REDIS_URL: "redis://redis-service:6379/0"
+  DATABASE_URL: "sqlite:///./data/hackstrom.db"
+  LOKI_URL: "http://loki-service:3100/loki/api/v1/push"
+  GROQ_MODEL: "llama-3.3-70b-versatile"
+  UPLOAD_DIR: "uploads"

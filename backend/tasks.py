@@ -2,7 +2,7 @@ from celery_app import celery_app
 import os, pickle
 import asyncio, time
 import logging
-from workflow_db import update_run_status, get_run
+from repositories.run_repository import update_run_status, get_run
 
 logger = logging.getLogger("hackstrom")
 
@@ -19,7 +19,7 @@ def run_compliance_pipeline(self, run_id: str, invoice_path: str,
     start_time = time.time()
     try:
         logger.info(f"[PIPELINE_START] run_id={run_id} jurisdiction={jurisdiction}")
-        update_run_status(run_id, "RUNNING")
+        asyncio.run(update_run_status(run_id, "RUNNING"))
         
         # Import here to avoid circular imports
         from graph import document_graph as graph
@@ -60,10 +60,10 @@ def run_compliance_pipeline(self, run_id: str, invoice_path: str,
         logger.info(f"[COMPLIANCE_RESULT] run_id={run_id} status={final_status}")
         logger.info(f"[PIPELINE_COMPLETE] run_id={run_id} status={final_status} duration_ms={elapsed}")
         
-        update_run_status(run_id, final_status, result if isinstance(result, dict) else result.model_dump())
+        asyncio.run(update_run_status(run_id, final_status, result if isinstance(result, dict) else result.model_dump()))
         return {"status": "success", "run_id": run_id}
         
     except Exception as exc:
         logger.error(f"[PIPELINE_ERROR] run_id={run_id} error={str(exc)}")
-        update_run_status(run_id, "ERROR", {"error": str(exc)})
+        asyncio.run(update_run_status(run_id, "ERROR", {"error": str(exc)}))
         raise self.retry(exc=exc, countdown=5)

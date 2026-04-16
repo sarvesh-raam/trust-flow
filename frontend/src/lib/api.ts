@@ -11,7 +11,14 @@ const BASE = _envBase
   : `/api/v1`;
 
 export type CountryCode = "us" | "uae";
-export type WorkflowStatus = "queued" | "running" | "completed" | "failed" | "blocked" | "interrupted";
+export type WorkflowStatus =
+  | "queued"
+  | "uploaded"
+  | "running"
+  | "completed"
+  | "failed"
+  | "blocked"
+  | "interrupted";
 
 
 export const STATUS_CONFIG: Record<WorkflowStatus, { label: string; cls: string }> = {
@@ -20,6 +27,7 @@ export const STATUS_CONFIG: Record<WorkflowStatus, { label: string; cls: string 
   failed:      { label: "FAIL",    cls: "badge-block" },
   running:     { label: "RUNNING", cls: "badge-blue"  },
   queued:      { label: "QUEUED",  cls: "badge-muted" },
+  uploaded:    { label: "UPLOADED", cls: "badge-muted" },
   interrupted: { label: "PAUSED",  cls: "badge-warn"  },
 };
 
@@ -28,7 +36,8 @@ export interface WorkflowStep {
   status: "pending" | "running" | "completed" | "failed" | "blocked" | "interrupted" | "queued";
   started_at?: string | null;
   completed_at?: string | null;
-  output?: Record<string, any>;
+  output?: Record<string, any> & { reasoning_note?: string | null };
+  reasoning_note?: string | null;
   error?: string | null;
 }
 
@@ -57,6 +66,15 @@ export interface StatusResponse extends WorkflowResponse {
   bboxes: BBoxEntry[];
   invoice_pdf_url?: string;
   bl_pdf_url?: string;
+}
+
+export interface WorkflowChatResponse {
+  reply: string;
+  updated: boolean;
+  changes: string[];
+  declaration?: Record<string, any>;
+  summary?: string;
+  chat_history: Array<Record<string, any>>;
 }
 
 const api = axios.create({
@@ -91,7 +109,36 @@ export const listWorkflows = async (): Promise<WorkflowResponse[]> => {
 };
 
 export const getRunStatus = async (runId: string): Promise<StatusResponse> => {
-  const { data } = await api.get(`/workflow/${runId}`);
+  const { data } = await api.get(`/workflow/status/${runId}`);
+  return data;
+};
+
+export const resumeWorkflow = async (runId: string, grossWeightKg: number) => {
+  const { data } = await api.post(`/workflow/resume/${runId}`, {
+    gross_weight_kg: grossWeightKg,
+  });
+  return data;
+};
+
+export const chatWithWorkflow = async (
+  runId: string,
+  message: string,
+): Promise<WorkflowChatResponse> => {
+  const { data } = await api.post(`/workflow/chat/${runId}`, { message });
+  return data;
+};
+
+export const createGuestSession = async () => {
+  const { data } = await api.post("/auth/google", { firebase_token: "local-guest" });
+  localStorage.setItem("access_token", data.access_token);
+  localStorage.setItem(
+    "guest_session",
+    JSON.stringify({
+      displayName: "Local Guest",
+      email: "guest@local",
+      photoURL: null,
+    }),
+  );
   return data;
 };
 

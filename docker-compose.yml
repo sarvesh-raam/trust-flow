@@ -5,12 +5,19 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - ORGANIZER_API_KEY=${ORGANIZER_API_KEY:-}
+      - ORGANIZER_API_BASE=${ORGANIZER_API_BASE:-https://api.openai.com/v1}
+      - ORGANIZER_CHAT_MODEL=${ORGANIZER_CHAT_MODEL:-gpt-4o}
+      - ORGANIZER_REASON_MODEL=${ORGANIZER_REASON_MODEL:-gpt-5.4}
+      - ORGANIZER_EMBED_MODEL=${ORGANIZER_EMBED_MODEL:-text-embedding-3-large}
       - GROQ_MODEL=${GROQ_MODEL:-llama-3.3-70b-versatile}
-      - DATABASE_URL=sqlite:///./data/hackstrom.db
       - UPLOAD_DIR=uploads
       - REDIS_URL=redis://redis:6379/0
       - LOKI_URL=http://loki:3100/loki/api/v1/push
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-hackstrom-secret-change-in-prod}
+      - FIREBASE_SERVICE_ACCOUNT_JSON=${FIREBASE_SERVICE_ACCOUNT_JSON:-}
+      - FIREBASE_STORAGE_BUCKET=${FIREBASE_STORAGE_BUCKET:-}
     volumes:
       - uploads_data:/app/uploads
       - db_data:/app/data
@@ -43,9 +50,14 @@ services:
       dockerfile: Dockerfile.worker
     container_name: hackstrom_worker_1
     environment:
-      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - ORGANIZER_API_KEY=${ORGANIZER_API_KEY:-}
+      - ORGANIZER_API_BASE=${ORGANIZER_API_BASE:-https://api.openai.com/v1}
+      - ORGANIZER_CHAT_MODEL=${ORGANIZER_CHAT_MODEL:-gpt-4o}
+      - ORGANIZER_REASON_MODEL=${ORGANIZER_REASON_MODEL:-gpt-5.4}
+      - ORGANIZER_EMBED_MODEL=${ORGANIZER_EMBED_MODEL:-text-embedding-3-large}
       - REDIS_URL=redis://redis:6379/0
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-hackstrom-secret-change-in-prod}
       - LOKI_URL=http://loki:3100/loki/api/v1/push
     volumes:
       - uploads_data:/app/uploads
@@ -61,9 +73,14 @@ services:
       dockerfile: Dockerfile.worker
     container_name: hackstrom_worker_2
     environment:
-      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - ORGANIZER_API_KEY=${ORGANIZER_API_KEY:-}
+      - ORGANIZER_API_BASE=${ORGANIZER_API_BASE:-https://api.openai.com/v1}
+      - ORGANIZER_CHAT_MODEL=${ORGANIZER_CHAT_MODEL:-gpt-4o}
+      - ORGANIZER_REASON_MODEL=${ORGANIZER_REASON_MODEL:-gpt-5.4}
+      - ORGANIZER_EMBED_MODEL=${ORGANIZER_EMBED_MODEL:-text-embedding-3-large}
       - REDIS_URL=redis://redis:6379/0
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-hackstrom-secret-change-in-prod}
       - LOKI_URL=http://loki:3100/loki/api/v1/push
     volumes:
       - uploads_data:/app/uploads
@@ -91,6 +108,21 @@ services:
     command: -config.file=/etc/loki/local-config.yaml
     restart: unless-stopped
 
+  prometheus:
+    image: prom/prometheus:v2.47.0
+    container_name: trustflow_prometheus
+    ports:
+      - "9090:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=24h'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./backend/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    restart: unless-stopped
+    depends_on:
+      - backend
+
   grafana:
     image: grafana/grafana:10.2.0
     container_name: hackstrom_grafana
@@ -107,6 +139,7 @@ services:
       - ./backend/grafana/dashboards:/etc/grafana/provisioning/dashboards
     depends_on:
       - loki
+      - prometheus
     restart: unless-stopped
 
 volumes:

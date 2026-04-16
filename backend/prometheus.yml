@@ -1,0 +1,16 @@
+global:
+  scrape_interval: 10s
+  evaluation_interval: 10s
+
+scrape_configs:
+  - job_name: trustflow-backend
+    static_configs:
+      - targets: ['backend:8000']
+    metrics_path: /metrics
+    scrape_interval: 10s
+
+  - job_name: trustflow-workers
+    static_configs:
+      - targets: ['worker1:8000', 'worker2:8000']
+    metrics_path: /metrics
+    scrape_interval: 15s

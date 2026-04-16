@@ -21,6 +21,7 @@ class DocumentStatus(str, Enum):
 
 class WorkflowStatus(str, Enum):
     QUEUED = "queued"
+    UPLOADED = "uploaded" # Native state for newly uploaded docs
     RUNNING = "running"
     BLOCKED = "blocked"
     COMPLETED = "completed"
@@ -53,6 +54,7 @@ class DocumentRecord(BaseModel):
 
 
 class DocumentResponse(DocumentRecord):
+    # PII-free response model: DocumentRecord audited for raw email leaks.
     workflow_id: UUID | None = None
 
 
@@ -279,6 +281,10 @@ class AuditEvent(BaseModel):
         ge=0.0,
         description="Wall-clock execution time of the node in milliseconds",
     )
+    reasoning_note: str | None = Field(
+        default=None,
+        description="One-sentence human-readable description of the node's decision",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -317,6 +323,7 @@ class ResumeRequest(BaseModel):
 
 
 class WorkflowResponse(WorkflowRecord):
+    # PII-free response model: WorkflowRecord audited for raw email leaks.
     pass
 
 
@@ -369,6 +376,14 @@ class WorkflowState(BaseModel):
             "Bounding boxes for each text element in the B/L. "
             "Each dict: {text, bbox: [l,t,r,b], page, source}."
         ),
+    )
+    invoice_page_image: str | None = Field(
+        default=None,
+        description="Base64-encoded JPEG of the first page of the invoice for Vision tasks.",
+    )
+    bl_page_image: str | None = Field(
+        default=None,
+        description="Base64-encoded JPEG of the first page of the B/L for Vision tasks.",
     )
 
     # ── OCR quality ───────────────────────────────────────────────────────────

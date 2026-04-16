@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: trust-flow
+  labels:
+    app.kubernetes.io/name: trust-flow
+    hackathon: hackstrom26

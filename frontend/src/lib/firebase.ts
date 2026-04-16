@@ -10,11 +10,21 @@ const firebaseConfig = {
   appId:             import.meta.env.VITE_FIREBASE_APP_ID,
 };
 
+export const isFirebaseConfigured = Object.values(firebaseConfig).every(Boolean);
+
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const provider = new GoogleAuthProvider();
 
 export const signInWithGoogle = () => signInWithPopup(auth, provider);
-export const signOutUser = () => signOut(auth);
+export const signOutUser = async () => {
+  localStorage.removeItem("guest_session");
+  localStorage.removeItem("access_token");
+  try {
+    await signOut(auth);
+  } catch {
+    // Local guest sessions do not have a Firebase user to sign out.
+  }
+};
 
 export { auth, onAuthStateChanged, type User };

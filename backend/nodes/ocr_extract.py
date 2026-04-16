@@ -10,15 +10,18 @@ populates WorkflowState with:
 """
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 from typing import Any
 
 import structlog
+import fitz
 
 from docling.document_converter import DocumentConverter
 from docling.datamodel.base_models import InputFormat
 from docling.datamodel.pipeline_options import PdfPipelineOptions
 
+from metrics import OCR_CONFIDENCE
 from models import WorkflowState
 
 log = structlog.get_logger(__name__)
@@ -96,15 +99,26 @@ def _extract_bboxes(document: Any, source: str) -> list[dict[str, Any]]:
 
 
 def _doc_confidence(bboxes: list[dict], text: str) -> float:
-    """Ratio of bbox elements to word count, clipped to [0.0, 1.0].
-
-    Heuristic interpretation:
-      ≈ 1.0 → native text-layer PDF (high quality)
-      < 0.3 → scanned image with sparse structure detection (low quality)
-    """
+    """Ratio of bbox elements to word count, clipped to [0.0, 1.0]."""
     word_count = max(len(text.split()), 1)
     raw = len(bboxes) / word_count
     return min(1.0, max(0.0, raw))
+
+
+def _extract_page_image(pdf_path: str, page_no: int = 0) -> str | None:
+    """Render the specified page of a PDF as a base64-encoded JPEG thumbnail."""
+    try:
+        doc = fitz.open(pdf_path)
+        if page_no >= len(doc):
+            return None
+        page = doc[page_no]
+        # 150 DPI is enough for LLM vision (GPT-4o recommends ~768px short side)
+        pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
+        img_bytes = pix.tobytes("jpg")
+        return base64.b64encode(img_bytes).decode("utf-8")
+    except Exception as exc:
+        log.warning("ocr_extract.image_render_failed", path=pdf_path, error=str(exc))
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -192,21 +206,27 @@ def ocr_extract_node(state: WorkflowState) -> WorkflowState:
             confidence=round(doc_conf, 3),
         )
 
+        # ── Page Image (Vision Context) ──────────────────────────────────
+        img_b64 = _extract_page_image(str(resolved), page_no=0)
+
         # ── Write into state ──────────────────────────────────────────────
         if doc_type == "invoice":
             state.invoice_ocr_text = text
             state.invoice_tables   = tables
             state.invoice_bboxes   = bboxes
+            state.invoice_page_image = img_b64
         else:
             state.bl_ocr_text  = text
             state.bl_tables    = tables
             state.bl_bboxes    = bboxes
+            state.bl_page_image = img_b64
 
     # ── Aggregate confidence ──────────────────────────────────────────────────
     state.ocr_confidence = (
         sum(confidences) / len(confidences) if confidences else 0.0
     )
     state.needs_vision_fallback = state.ocr_confidence < 0.7
+    OCR_CONFIDENCE.observe(state.ocr_confidence)
 
     log.info(
         "ocr_extract.done",

@@ -7,16 +7,16 @@ from pathlib import Path
 import aiofiles
 import structlog
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
-from sqlmodel import Session, select
 
-from workflow_db import db
-from db import UploadRunRow, engine
 from models import (
     CountryCode,
     DocumentRecord,
     DocumentResponse,
     DocumentStatus,
 )
+
+import firebase_client
+from repositories.run_repository import _repo as run_repo
 
 log = structlog.get_logger(__name__)
 
@@ -30,10 +30,33 @@ ALLOWED_CONTENT_TYPES = {
     "image/png",
     "image/jpeg",
     "image/tiff",
-    # Windows sometimes sends these for PDFs
     "application/octet-stream",
     "application/x-pdf",
 }
+
+def upload_to_storage(run_id: str, source: str, local_path: Path) -> str | None:
+    """Upload a file to Firebase Storage and return its public/GCS URL.
+    
+    Path format: uploads/{run_id}/{source}.pdf
+    """
+    if not firebase_client.storage_bucket:
+        log.warning("storage.disabled", run_id=run_id, source=source)
+        return None
+    
+    try:
+        blob_path = f"uploads/{run_id}/{source}.pdf"
+        blob = firebase_client.storage_bucket.blob(blob_path)
+        blob.upload_from_filename(str(local_path))
+        
+        # We return the gs:// path or a public URL. Usually for backend-to-backend 
+        # or internal use, gs:// is standard. For frontend, a signed URL or 
+        # download token is needed. Here we follow the task's implied blob focus.
+        gcs_url = f"gs://{firebase_client.storage_bucket.name}/{blob_path}"
+        log.info("storage.uploaded", run_id=run_id, source=source, gcs_url=gcs_url)
+        return gcs_url
+    except Exception as e:
+        log.error("storage.upload_failed", run_id=run_id, source=source, error=str(e))
+        return None
 
 
 @router.post(
@@ -49,11 +72,10 @@ async def upload_documents(
 ) -> DocumentResponse:
     """Accept both trade documents in a single multipart request.
 
-    Saves them as  uploads/{run_id}_invoice.pdf  and  uploads/{run_id}_bl.pdf
-    then writes an UploadRunRow to SQLite so the workflow route can look up the
-    exact paths without relying on filename conventions.
+    Saves them locally as fallback, then uploads to Firebase Storage.
+    Persists metadata in both SQLite and Firestore.
     """
-    # Validate content types (be lenient — browsers vary)
+    # Validate content types
     for upload, label in [(invoice_pdf, "invoice_pdf"), (bl_pdf, "bl_pdf")]:
         ct = upload.content_type or ""
         if ct and ct not in ALLOWED_CONTENT_TYPES:
@@ -63,45 +85,45 @@ async def upload_documents(
             )
 
     run_id = str(uuid.uuid4())
-
     inv_dest = UPLOAD_DIR / f"{run_id}_invoice.pdf"
     bl_dest  = UPLOAD_DIR / f"{run_id}_bl.pdf"
 
     inv_content = await invoice_pdf.read()
     bl_content  = await bl_pdf.read()
 
+    # 1. Save locally (Fallback)
     async with aiofiles.open(inv_dest, "wb") as fh:
         await fh.write(inv_content)
-
     async with aiofiles.open(bl_dest, "wb") as fh:
         await fh.write(bl_content)
 
-    # Persist paths so the workflow route can find them
-    with db.session() as session:
+    # 2. Upload to Firebase Storage
+    inv_gcs_url = upload_to_storage(run_id, "invoice", inv_dest)
+    bl_gcs_url  = upload_to_storage(run_id, "bl", bl_dest)
 
-        row = UploadRunRow(
-            run_id=run_id,
-            invoice_path=str(inv_dest),
-            bl_path=str(bl_dest),
-            country=country.value,
-            status="uploaded",
-        )
-        session.add(row)
-        session.commit()
-        session.refresh(row)
+    # 3. Transmit to Firestore (Parallel Persistence now becomes Primary)
+    if firebase_client.db:
+        try:
+            await run_repo.create(
+                run_id=run_id,
+                invoice_path=str(inv_dest),
+                bl_path=str(bl_dest),
+                country=country.value,
+                invoice_gcs_url=inv_gcs_url,
+                bl_gcs_url=bl_gcs_url,
+            )
+        except Exception as e:
+            log.error("firestore.sync_failed", run_id=run_id, error=str(e))
 
     log.info(
         "documents.uploaded",
         run_id=run_id,
         invoice=invoice_pdf.filename,
         bl=bl_pdf.filename,
-        country=country,
-        inv_bytes=len(inv_content),
-        bl_bytes=len(bl_content),
+        inv_gcs=inv_gcs_url,
+        bl_gcs=bl_gcs_url,
     )
 
-    # Return DocumentResponse using run_id as the document id so the frontend
-    # can pass it unchanged to POST /workflow/
     return DocumentResponse(
         id=uuid.UUID(run_id),
         filename=f"{invoice_pdf.filename} + {bl_pdf.filename}",
@@ -111,6 +133,8 @@ async def upload_documents(
             "run_id":        run_id,
             "invoice_path":  str(inv_dest),
             "bl_path":       str(bl_dest),
+            "gcs_invoice_url": inv_gcs_url,
+            "gcs_bl_url":      bl_gcs_url,
             "inv_bytes":     len(inv_content),
             "bl_bytes":      len(bl_content),
         },
@@ -123,16 +147,21 @@ async def upload_documents(
     summary="Get upload record by run_id",
 )
 async def get_document(document_id: str) -> DocumentResponse:
-    with db.session() as session:
-        row = session.get(UploadRunRow, document_id)
+    row = await run_repo.get(document_id)
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Upload not found")
+    
     return DocumentResponse(
-        id=uuid.UUID(row.run_id),
+        id=uuid.UUID(row.get("run_id", document_id)),
         filename=f"invoice + bl",
-        country=CountryCode(row.country),
+        country=CountryCode(row.get("country", "US")),
         status=DocumentStatus.PENDING,
-        metadata={"invoice_path": row.invoice_path, "bl_path": row.bl_path},
+        metadata={
+            "invoice_path": row.get("invoice_path"), 
+            "bl_path": row.get("bl_path"),
+            "gcs_invoice_url": row.get("invoice_gcs_url"),
+            "gcs_bl_url": row.get("bl_gcs_url"),
+        },
     )
 
 
@@ -142,15 +171,19 @@ async def get_document(document_id: str) -> DocumentResponse:
     summary="List all uploads",
 )
 async def list_documents() -> list[DocumentResponse]:
-    with db.session() as session:
-        rows = session.exec(select(UploadRunRow)).all()
+    rows = await run_repo.list_all()
     return [
         DocumentResponse(
-            id=uuid.UUID(r.run_id),
+            id=uuid.UUID(r.get("run_id")),
             filename="invoice + bl",
-            country=CountryCode(r.country),
+            country=CountryCode(r.get("country", "US")),
             status=DocumentStatus.PENDING,
-            metadata={"invoice_path": r.invoice_path, "bl_path": r.bl_path},
+            metadata={
+                "invoice_path": r.get("invoice_path"), 
+                "bl_path": r.get("bl_path"),
+                "gcs_invoice_url": r.get("invoice_gcs_url"),
+                "gcs_bl_url": r.get("bl_gcs_url"),
+            },
         )
         for r in rows
     ]

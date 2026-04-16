@@ -1,1085 +1,236 @@
-import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { getRunStatus, type BBoxEntry, type WorkflowStep } from "@/lib/api";
+import { useEffect, useMemo, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  chatWithWorkflow,
+  getRunStatus,
+  resumeWorkflow,
+  type StatusResponse,
+} from "@/lib/api";
 import PDFViewerPanel from "@/components/PDFViewerPanel";
 import { useDemoMode } from "@/demo/DemoContext";
-import { DEMO_WORKFLOW } from "@/demo/mockData";
 
-// ── Node colour map removed for strict status-driven colours ──────────────────
+type Phase = "blocked" | "resuming" | "completed";
+type AnyMap = Record<string, any>;
 
-// ── Compliance status colours ──────────────────────────────────────────────────
-function compColor(s?: string) {
-  if (s === "PASS")  return "var(--accent-green)";
-  if (s === "WARN")  return "var(--accent-amber)";
-  if (s === "BLOCK") return "var(--accent-red)";
+function msg(err: unknown) {
+  const value = err as { response?: { data?: { detail?: string } }; message?: string };
+  return value?.response?.data?.detail ?? value?.message ?? String(err);
+}
+
+function tone(status?: string) {
+  if (status === "PASS") return "var(--accent-green)";
+  if (status === "WARN") return "var(--accent-amber)";
+  if (status === "BLOCK") return "var(--accent-red)";
   return "var(--text-muted)";
 }
 
-// ── Confidence badge ───────────────────────────────────────────────────────────
-function ConfBadge({ v }: { v: number }) {
-  const pct = Math.round(v * 100);
-  const color = pct >= 90 ? "var(--accent-green)" : pct >= 70 ? "var(--accent-amber)" : "var(--accent-red)";
-  return (
-    <span style={{
-      fontFamily:    "'JetBrains Mono', monospace",
-      fontSize:      "0.58rem",
-      fontWeight:    700,
-      color,
-      backgroundColor: `${color}18`,
-      border:        `1px solid ${color}40`,
-      padding:       "1px 6px",
-      borderRadius:  "9999px",
-      flexShrink:    0,
-    }}>
-      {pct}%
-    </span>
-  );
+function label(value: string) {
+  return value.replace(/_/g, " ").toUpperCase();
 }
 
-// ── Panel header bar ───────────────────────────────────────────────────────────
-function PanelHeader({
-  accent,
-  title,
-  sub,
-  right,
+export default function DeclarationPage({
+  runId,
+  onBack,
 }: {
-  accent: string;
-  title: string;
-  sub?: string;
-  right?: React.ReactNode;
-}) {
-  return (
-    <div style={{
-      backgroundColor: "var(--header-bg)",
-      borderBottom:    "1px solid #1e293b",
-      padding:         "10px 16px",
-      flexShrink:      0,
-      borderLeft:      `3px solid ${accent}`,
-      display:         "flex",
-      alignItems:      "center",
-      gap:             "10px",
-    }}>
-      <span style={{
-        fontFamily:    "'Space Grotesk', sans-serif",
-        fontWeight:    700,
-        fontSize:      "0.7rem",
-        color:         "var(--text-muted)",
-        letterSpacing: "0.1em",
-      }}>
-        {title}
-      </span>
-      {sub && (
-        <span style={{
-          fontFamily: "'JetBrains Mono', monospace",
-          fontSize:   "0.58rem",
-          color:      "var(--text-muted)",
-        }}>
-          {sub}
-        </span>
-      )}
-      {right && <div style={{ marginLeft: "auto" }}>{right}</div>}
-    </div>
-  );
-}
-
-// ── Extracted field row ────────────────────────────────────────────────────────
-function FieldRow({
-  name,
-  value,
-  confidence,
-  issueLevel,
-}: {
-  name: string;
-  value: string;
-  confidence?: number;
-  issueLevel?: "warn" | "block" | null;
-}) {
-  const borderColor =
-    issueLevel === "block" ? "var(--accent-red)" :
-    issueLevel === "warn"  ? "var(--accent-amber)" :
-    "transparent";
-  const hasIssue = borderColor !== "transparent";
-
-  return (
-    <div style={{
-      display:       "flex",
-      alignItems:    "center",
-      gap:           "10px",
-      padding:       "9px 0",
-      borderBottom:  "1px solid #0f172a",
-      borderLeft:    hasIssue ? `2px solid ${borderColor}` : undefined,
-      paddingLeft:   hasIssue ? "10px" : undefined,
-      backgroundColor: issueLevel === "block" ? "rgba(220, 38, 38, 0.04)" : undefined,
-      boxShadow:     issueLevel === "block" ? `inset 0 0 8px rgba(239,68,68,0.08)` : undefined,
-    }}>
-      <span style={{
-        fontFamily:  "'JetBrains Mono', monospace",
-        fontSize:    "0.62rem",
-        color:       "var(--text-secondary)",
-        flex:        "0 0 140px",
-        flexShrink:  0,
-        letterSpacing: "0.04em",
-      }}>
-        {name.replace(/_/g, "_").toUpperCase()}
-      </span>
-      <span style={{
-        fontFamily:    "'JetBrains Mono', monospace",
-        fontSize:      "0.7rem",
-        color:         "var(--text-primary)",
-        flex:          1,
-        overflow:      "hidden",
-        textOverflow:  "ellipsis",
-        whiteSpace:    "nowrap",
-      }}>
-        {value || "—"}
-      </span>
-      {confidence !== undefined && <ConfBadge v={confidence} />}
-    </div>
-  );
-}
-
-// ── Agent trace node ───────────────────────────────────────────────────────────
-function TraceNode({
-  step,
-  expanded,
-  onToggle,
-}: {
-  step: WorkflowStep;
-  expanded: boolean;
-  onToggle: () => void;
-}) {
-  const hasOutput  = step.output && Object.keys(step.output).length > 0;
-  const latencyMs  =
-    step.started_at && step.completed_at
-      ? Math.round(
-          new Date(step.completed_at).getTime() -
-          new Date(step.started_at).getTime()
-        )
-      : null;
-
-  const statusColor =
-    step.status === "completed" ? "var(--accent-green)" :
-    step.status === "failed"    ? "var(--accent-red)" :
-    step.status === "blocked"   ? "var(--accent-red)" :
-    step.status === "running"   ? "var(--accent-blue)" :
-    "var(--text-muted)";
-
-  return (
-    <div style={{ position: "relative", paddingLeft: "26px", marginBottom: "10px" }}>
-      {/* Timeline dot */}
-      <div style={{
-        position:        "absolute",
-        left:            "3px",
-        top:             "7px",
-        width:           "10px",
-        height:          "10px",
-        borderRadius:    "50%",
-        backgroundColor: statusColor,
-        boxShadow:       `0 0 7px ${statusColor}70`,
-        flexShrink:      0,
-        animation:       step.status === "running" ? "pulse-dot 2s ease-in-out infinite" : undefined,
-      }} />
-
-      <div
-        onClick={() => hasOutput && onToggle()}
-        style={{ cursor: hasOutput ? "pointer" : "default" }}
-      >
-        {/* Node header row */}
-        <div style={{ display: "flex", alignItems: "center", gap: "7px", flexWrap: "wrap" }}>
-          <span style={{
-            fontFamily:    "'JetBrains Mono', monospace",
-            fontSize:      "0.65rem",
-            fontWeight:    700,
-            color:         "var(--text-secondary)",
-            letterSpacing: "0.04em",
-          }}>
-            {step.name.toUpperCase().replace(/_/g, "_")}
-          </span>
-
-          {/* Status micro badge */}
-          <span style={{
-            fontFamily:      "'JetBrains Mono', monospace",
-            fontSize:        "0.52rem",
-            fontWeight:      700,
-            color:           statusColor,
-            backgroundColor: `${statusColor}18`,
-            border:          `1px solid ${statusColor}40`,
-            padding:         "1px 5px",
-            letterSpacing:   "0.08em",
-          }}>
-            {step.status.toUpperCase()}
-          </span>
-
-          {/* Latency badge */}
-          {latencyMs !== null && (
-            <span style={{
-              fontFamily:      "'JetBrains Mono', monospace",
-              fontSize:        "0.52rem",
-              color:           "var(--text-secondary)",
-              backgroundColor: "var(--bg-primary)",
-              border:          "1px solid #1e293b",
-              padding:         "1px 6px",
-            }}>
-              {latencyMs}ms
-            </span>
-          )}
-
-          {/* Expand toggle */}
-          {hasOutput && (
-            <span style={{
-              marginLeft: "auto",
-              color:      "var(--text-muted)",
-              fontSize:   "0.55rem",
-              userSelect: "none",
-            }}>
-              {expanded ? "▲ HIDE" : "▼ JSON"}
-            </span>
-          )}
-        </div>
-
-        {/* Error message */}
-        {step.error && (
-          <p style={{
-            fontFamily: "'JetBrains Mono', monospace",
-            fontSize:   "0.6rem",
-            color:      "var(--accent-red)",
-            marginTop:  "3px",
-          }}>
-            ERR: {step.error}
-          </p>
-        )}
-      </div>
-
-      {/* Expanded JSON output */}
-      {expanded && hasOutput && (
-        <pre style={{
-          marginTop:       "8px",
-          padding:         "10px 12px",
-          backgroundColor: "var(--header-bg)",
-          border:          "1px solid #1e293b",
-          fontFamily:      "'JetBrains Mono', monospace",
-          fontSize:        "0.55rem",
-          color:           "#64748b",
-          overflow:        "auto",
-          maxHeight:       "200px",
-          lineHeight:      1.65,
-          whiteSpace:      "pre-wrap",
-          wordBreak:       "break-word",
-        }}>
-          {JSON.stringify(step.output, null, 2)}
-        </pre>
-      )}
-    </div>
-  );
-}
-
-// ── HITL Correction Panel (demo only) ────────────────────────────────────────
-function HitlPanel({
-  phase,
-  correctedWeight,
-  onWeightChange,
-  onSubmit,
-  issue,
-  invoiceWeight,
-  blWeight,
-}: {
-  phase: "blocked" | "resuming" | "completed";
-  correctedWeight: string;
-  onWeightChange: (v: string) => void;
-  onSubmit: () => void;
-  issue?: any;
-  invoiceWeight?: string | number | null;
-  blWeight?: string | number | null;
-}) {
-  const mono = "'JetBrains Mono', monospace";
-
-  if (phase === "completed") {
-    return (
-      <div style={{
-        marginTop:       "20px",
-        borderTop:       "1px solid #1e293b",
-        paddingTop:      "16px",
-      }}>
-        <div style={{
-          padding:         "14px 16px",
-          backgroundColor: "rgba(22, 163, 74, 0.07)",
-          border:          "1px solid rgba(34,197,94,0.25)",
-          borderLeft:      "3px solid #22c55e",
-          display:         "flex",
-          alignItems:      "center",
-          gap:             "10px",
-        }}>
-          <span style={{ fontSize: "1rem" }}>✓</span>
-          <div>
-            <p style={{ fontFamily: mono, fontSize: "0.65rem", fontWeight: 700, color: "var(--accent-green)", margin: 0 }}>
-              CORRECTIONS ACCEPTED — PIPELINE RESUMED
-            </p>
-            <p style={{ fontFamily: mono, fontSize: "0.6rem", color: "var(--text-secondary)", marginTop: "3px" }}>
-              Gross weight updated to 860 kg · Compliance status: PASS
-            </p>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  if (phase === "resuming") {
-    return (
-      <div style={{
-        marginTop:       "20px",
-        borderTop:       "1px solid #1e293b",
-        paddingTop:      "16px",
-      }}>
-        <div style={{
-          padding:    "14px 16px",
-          border:     "1px solid #1e3a5f",
-          backgroundColor: "rgba(37, 99, 235, 0.06)",
-          borderLeft: "3px solid #3B82F6",
-        }}>
-          <p style={{ fontFamily: mono, fontSize: "0.65rem", fontWeight: 700, color: "var(--accent-blue)", marginBottom: "10px" }}>
-            RESUMING PIPELINE…
-          </p>
-          {/* Animated progress bar */}
-          <div style={{
-            height:          "3px",
-            backgroundColor: "var(--border)",
-            position:        "relative",
-            overflow:        "hidden",
-          }}>
-            <div style={{
-              position:        "absolute",
-              left:            "-40%",
-              top:             0,
-              bottom:          0,
-              width:           "40%",
-              backgroundColor: "var(--accent-blue)",
-              animation:       "slide-bar 1s linear infinite",
-            }} />
-          </div>
-          <p style={{ fontFamily: mono, fontSize: "0.6rem", color: "var(--text-secondary)", marginTop: "8px" }}>
-            Applying correction · declaration_generate → audit_trace
-          </p>
-        </div>
-        <style>{`
-          @keyframes slide-bar {
-            0%   { left: -40%; }
-            100% { left: 100%; }
-          }
-        `}</style>
-      </div>
-    );
-  }
-
-  // phase === "blocked"
-  return (
-    <div style={{
-      marginTop:  "20px",
-      borderTop:  "1px solid #1e293b",
-      paddingTop: "16px",
-    }}>
-      {/* Section label */}
-      <div style={{
-        fontFamily:    mono,
-        fontSize:      "0.58rem",
-        color:         "var(--accent-red)",
-        letterSpacing: "0.14em",
-        fontWeight:    700,
-        marginBottom:  "12px",
-        display:       "flex",
-        alignItems:    "center",
-        gap:           "8px",
-      }}>
-        <span style={{
-          display:         "inline-block",
-          width:           "6px",
-          height:          "6px",
-          borderRadius:    "50%",
-          backgroundColor: "var(--accent-red)",
-          animation:       "pulse-dot 1.2s ease-in-out infinite",
-        }} />
-        HUMAN REVIEW REQUIRED
-      </div>
-
-      {/* Issue card */}
-      <div style={{
-        padding:         "10px 12px",
-        backgroundColor: "rgba(220, 38, 38, 0.06)",
-        border:          "1px solid rgba(239,68,68,0.2)",
-        borderLeft:      "3px solid #ef4444",
-        marginBottom:    "14px",
-      }}>
-        <p style={{ fontFamily: mono, fontSize: "0.6rem", fontWeight: 700, color: "var(--accent-red)", marginBottom: "4px" }}>
-          [BLOCK] {issue?.field?.toUpperCase() || "(UNKNOWN_FIELD)"}
-        </p>
-        <p style={{ fontFamily: mono, fontSize: "0.63rem", color: "var(--text-muted)", lineHeight: 1.5 }}>
-          {issue?.message || "No specific message provided."}
-        </p>
-      </div>
-
-      {/* Weight correction input */}
-      <div style={{ marginBottom: "12px" }}>
-        <label style={{
-          fontFamily:    mono,
-          fontSize:      "0.58rem",
-          fontWeight:    700,
-          color:         "var(--text-secondary)",
-          letterSpacing: "0.12em",
-          display:       "block",
-          marginBottom:  "6px",
-        }}>
-          CORRECTED GROSS WEIGHT (KG)
-        </label>
-        <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-          <input
-            type="number"
-            value={correctedWeight}
-            onChange={(e) => onWeightChange(e.target.value)}
-            style={{
-              flex:            1,
-              backgroundColor: "var(--bg-primary)",
-              border:          "1px solid #1e293b",
-              color:           "var(--accent-blue)",
-              fontFamily:      mono,
-              fontSize:        "0.85rem",
-              fontWeight:      700,
-              padding:         "8px 12px",
-              outline:         "none",
-              letterSpacing:   "0.04em",
-            }}
-            placeholder="Enter correct gross weight in kg"
-            onFocus={(e) => {
-              e.currentTarget.style.borderColor = "var(--accent-blue)";
-              e.currentTarget.style.boxShadow = "0 0 0 1px #3B82F6, 0 0 12px rgba(59,130,246,0.15)";
-            }}
-            onBlur={(e) => {
-              e.currentTarget.style.borderColor = "var(--border)";
-              e.currentTarget.style.boxShadow = "none";
-            }}
-          />
-          <span style={{ fontFamily: mono, fontSize: "0.65rem", color: "var(--text-secondary)" }}>kg</span>
-        </div>
-      </div>
-
-      {/* Submit button */}
-      <button
-        onClick={onSubmit}
-        style={{
-          width:           "100%",
-          backgroundColor: "var(--accent-red)",
-          border:          "1px solid #ef4444",
-          color:           "#ffffff",
-          fontFamily:      mono,
-          fontSize:        "0.68rem",
-          fontWeight:      700,
-          letterSpacing:   "0.14em",
-          textTransform:   "uppercase",
-          padding:         "10px",
-          cursor:          "pointer",
-          transition:      "all 0.15s ease",
-        }}
-        onMouseEnter={(e) => {
-          (e.currentTarget as HTMLElement).style.backgroundColor = "#dc2626";
-          (e.currentTarget as HTMLElement).style.boxShadow =
-            "0 0 16px rgba(239,68,68,0.4), 0 0 32px rgba(239,68,68,0.15)";
-        }}
-        onMouseLeave={(e) => {
-          (e.currentTarget as HTMLElement).style.backgroundColor = "var(--accent-red)";
-          (e.currentTarget as HTMLElement).style.boxShadow = "none";
-        }}
-      >
-        SUBMIT CORRECTIONS →
-      </button>
-
-      <p style={{ fontFamily: mono, fontSize: "0.58rem", color: "var(--text-muted)", marginTop: "10px", textAlign: "center" }}>
-        B/L declared: {blWeight ? `${blWeight} kg` : "NOT SPECIFIED"} · Invoice extracted: {invoiceWeight ?? "NOT SPECIFIED"} kg
-      </p>
-    </div>
-  );
-}
-
-// ── Props ──────────────────────────────────────────────────────────────────────
-interface DeclarationPageProps {
   runId: string;
   onBack: () => void;
-}
-
-export default function DeclarationPage({ runId, onBack }: DeclarationPageProps) {
-  const [docSource,    setDocSource]    = useState<"invoice" | "bl">("invoice");
-  const [expandedNode, setExpandedNode] = useState<string | null>(null);
-  const [correctedWeight, setCorrectedWeight] = useState("820");
-
-  const toggleNode = (name: string) =>
-    setExpandedNode((prev) => (prev === name ? null : name));
-
-  // ── Demo mode wiring ──────────────────────────────────────────────────────
-  const { isDemoMode, demoStatus: demoData, demoPhase, submitCorrections } = useDemoMode();
-
-  const { data: realData, isLoading: realLoading } = useQuery({
-    queryKey:  ["run-status", runId],
-    queryFn:   () => getRunStatus(runId),
-    refetchInterval: (query) => {
-      const s = query.state.data?.status;
-      return s === "completed" || s === "failed" || s === "blocked" ? false : 2500;
-    },
+}) {
+  const { isDemoMode, demoStatus, demoPhase, submitCorrections } = useDemoMode();
+  const queryClient = useQueryClient();
+  const [activePdf, setActivePdf] = useState<"invoice" | "bl">("invoice");
+  const [correctedWeight, setCorrectedWeight] = useState("");
+  const [phase, setPhase] = useState<Phase>("blocked");
+  const [chatInput, setChatInput] = useState("");
+  const [chatError, setChatError] = useState<string | null>(null);
+  const [resumeError, setResumeError] = useState<string | null>(null);
+  const [demoChat, setDemoChat] = useState([{ role: "assistant", content: "Ask for a summary, compare weights, or say 'change bill of lading gross weight to 860'." }]);
+  const q = useQuery<StatusResponse>({
+    queryKey: ["run-status", runId],
+    queryFn: () => getRunStatus(runId),
     enabled: !isDemoMode,
+    refetchInterval: (state) => {
+      const status = state.state.data?.status;
+      return status === "completed" || status === "failed" || status === "blocked" ? false : 2500;
+    },
+  });
+  const data = isDemoMode ? demoStatus : q.data;
+  const result = (data?.result ?? {}) as AnyMap;
+  const declaration = (result.declaration ?? {}) as AnyMap;
+  const invoice = (declaration.invoice ?? {}) as AnyMap;
+  const bill = (declaration.bill_of_lading ?? {}) as AnyMap;
+  const compliance = (declaration.compliance ?? {}) as AnyMap;
+  const issues = useMemo(() => Array.isArray(compliance.issues) ? compliance.issues : Array.isArray(result.issues) ? result.issues : [], [compliance.issues, result.issues]);
+  const fields = (entry: AnyMap) => Object.entries(entry).filter(([k, v]) => k !== "line_items" && v != null && typeof v !== "object");
+  const lineItems = Array.isArray(invoice.line_items) ? invoice.line_items : [];
+  const complianceStatus = typeof compliance.status === "string" ? compliance.status : result.compliance_status;
+  const chatHistory = isDemoMode ? demoChat : Array.isArray(result.chat_history) ? result.chat_history : [];
+
+  useEffect(() => {
+    const next = bill.gross_weight_kg ?? invoice.gross_weight_kg;
+    if ((correctedWeight === "" || correctedWeight === "0") && next != null) setCorrectedWeight(String(next));
+  }, [bill.gross_weight_kg, correctedWeight, invoice.gross_weight_kg]);
+
+  useEffect(() => {
+    if (!isDemoMode) {
+      if (data?.status === "completed") setPhase("completed");
+      if (data?.status === "blocked") setPhase("blocked");
+    }
+  }, [data?.status, isDemoMode]);
+
+  const resumeMutation = useMutation({
+    mutationFn: (value: number) => resumeWorkflow(runId, value),
+    onMutate: () => {
+      setResumeError(null);
+      setPhase("resuming");
+    },
+    onSuccess: (value) => {
+      setPhase(value.status === "completed" ? "completed" : "blocked");
+      queryClient.invalidateQueries({ queryKey: ["run-status", runId] });
+      queryClient.invalidateQueries({ queryKey: ["workflows"] });
+    },
+    onError: (err) => {
+      setPhase("blocked");
+      setResumeError(msg(err));
+    },
   });
 
-  const data       = isDemoMode ? demoData    : realData;
-  const isLoading  = isDemoMode ? false       : realLoading;
+  const chatMutation = useMutation({
+    mutationFn: (value: string) => chatWithWorkflow(runId, value),
+    onSuccess: (value) => {
+      setChatInput("");
+      setChatError(null);
+      queryClient.setQueryData<StatusResponse | undefined>(["run-status", runId], (current) => current ? { ...current, result: { ...current.result, declaration: value.declaration ?? current.result.declaration, summary: value.summary ?? current.result.summary, chat_history: value.chat_history } } : current);
+      queryClient.invalidateQueries({ queryKey: ["run-status", runId] });
+      queryClient.invalidateQueries({ queryKey: ["workflows"] });
+    },
+    onError: (err) => setChatError(msg(err)),
+  });
 
-  // ── Derived data ─────────────────────────────────────────────────────────
-  const bboxes: BBoxEntry[]         = data?.bboxes ?? [];
-  const steps:  WorkflowStep[]      = data?.steps  ?? [];
-  const result                      = data?.result ?? {};
-  const compStatus                  = result.compliance_status as string | undefined;
-  const declaration                 = result.declaration as Record<string, unknown> | undefined;
-  const compliance                  = (declaration?.compliance as {
-    status: string;
-    issues: Array<{ field: string; message: string; severity: string }>;
-  } | undefined);
-  const summaryText = result.summary as string | undefined;
-
-  const cc = compColor(compStatus);
-
-  // ── HITL: is human correction needed right now? ───────────────────────────
-  const [realPhase, setRealPhase] = useState<"blocked" | "resuming" | "completed">("blocked");
-  const needsHITL = (isDemoMode && demoPhase === "blocked") || (!isDemoMode && data?.status === "blocked");
-  const isResuming = (isDemoMode && demoPhase === "resuming") || (!isDemoMode && realPhase === "resuming");
-  const currentPhase = isDemoMode ? demoPhase : realPhase;
-
-  // ── Full-height loading ───────────────────────────────────────────────────
-  if (isLoading) {
-    return (
-      <div style={{
-        display:        "flex",
-        alignItems:     "center",
-        justifyContent: "center",
-        height:         "100%",
-        fontFamily:     "'JetBrains Mono', monospace",
-        color:          "var(--text-muted)",
-        fontSize:       "0.72rem",
-        letterSpacing:  "0.1em",
-        backgroundColor: "var(--bg-primary)",
-      }}>
-        [ LOADING DECLARATION... ]
-      </div>
-    );
+  function submitResume() {
+    const next = Number(correctedWeight);
+    if (!Number.isFinite(next) || next <= 0) {
+      setResumeError("Enter a valid corrected gross weight.");
+      return;
+    }
+    if (isDemoMode) {
+      submitCorrections(next);
+      return;
+    }
+    resumeMutation.mutate(next);
   }
 
+  function sendChat() {
+    const value = chatInput.trim();
+    if (!value) return;
+    setChatError(null);
+    if (isDemoMode) {
+      const lower = value.toLowerCase();
+      const match = lower.match(/(?:change|set|update).*(?:weight|gross weight).*\bto\s+(\d+(?:\.\d+)?)/);
+      let reply = "In demo mode I can summarize the shipment or accept a weight correction command.";
+      let updated = false;
+      let changes: string[] = [];
+      if (lower.includes("summary") || lower.includes("status")) reply = String(demoStatus.result.summary ?? "");
+      else if (lower.includes("issue") || lower.includes("compliance")) reply = "Active issue: invoice gross weight and bill of lading gross weight do not match.";
+      else if (lower.includes("weight")) reply = `Invoice gross weight is ${invoice.gross_weight_kg ?? 820} kg and bill of lading gross weight is ${bill.gross_weight_kg ?? 860} kg.`;
+      if (match) {
+        const next = Number(match[1]);
+        setCorrectedWeight(String(next));
+        submitCorrections(next);
+        reply = `Updated the bill of lading gross weight to ${next} kg and resumed validation.`;
+        updated = true;
+        changes = [`bill_of_lading.gross_weight_kg -> ${next}`];
+      }
+      setDemoChat((current) => [...current, { role: "user", content: value }, { role: "assistant", content: reply, updated, changes }]);
+      setChatInput("");
+      return;
+    }
+    chatMutation.mutate(value);
+  }
+
+  if (!data && q.isLoading) return <div style={{ padding: "32px", color: "var(--text-muted)", fontFamily: "'JetBrains Mono', monospace" }}>[ LOADING DECLARATION REVIEW... ]</div>;
+  if (!data) return <div style={{ padding: "32px", color: "var(--accent-red)", fontFamily: "'JetBrains Mono', monospace" }}>{msg(q.error)}</div>;
+
+  const currentPhase = isDemoMode ? demoPhase : phase;
+  const box = { backgroundColor: "var(--bg-card)", border: "1px solid #1e293b" } as const;
+  const badge = { fontFamily: "'JetBrains Mono', monospace", fontSize: "0.58rem", fontWeight: 700, letterSpacing: "0.08em", padding: "5px 8px" } as const;
+
   return (
-    <div style={{
-      display:         "flex",
-      flexDirection:   "column",
-      height:          "100%",
-      backgroundColor: "var(--bg-primary)",
-      overflow:        "hidden",
-    }}>
-      {/* ── Declaration sub-header ────────────────────────────────────────── */}
-      <div style={{
-        backgroundColor: "var(--header-bg)",
-        borderBottom:    "1px solid #1e293b",
-        padding:         "8px 16px",
-        display:         "flex",
-        alignItems:      "center",
-        gap:             "12px",
-        flexShrink:      0,
-        overflowX:       "auto",
-      }}>
-        {/* Back button */}
-        <button
-          onClick={onBack}
-          style={{
-            fontFamily:      "'JetBrains Mono', monospace",
-            fontSize:        "0.63rem",
-            fontWeight:      700,
-            color:           "var(--accent-blue)",
-            border:          "1px solid #1e3a5f",
-            backgroundColor: "transparent",
-            padding:         "4px 12px",
-            cursor:          "pointer",
-            letterSpacing:   "0.06em",
-            flexShrink:      0,
-            transition:      "all 0.15s",
-          }}
-          onMouseEnter={(e) => {
-            (e.currentTarget as HTMLElement).style.backgroundColor = "rgba(37, 99, 235, 0.12)";
-          }}
-          onMouseLeave={(e) => {
-            (e.currentTarget as HTMLElement).style.backgroundColor = "transparent";
-          }}
-        >
-          ← BACK
-        </button>
-
-        <div style={{ width: "1px", height: "18px", backgroundColor: "var(--border)", flexShrink: 0 }} />
-
-        {/* Run ID */}
-        <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "0.6rem", color: "var(--text-secondary)", flexShrink: 0 }}>
-          RUN_ID:
-        </span>
-        <span style={{
-          fontFamily: "'JetBrains Mono', monospace",
-          fontSize:   "0.63rem",
-          color:      "var(--accent-blue)",
-          flexShrink: 0,
-        }}>
-          {runId.slice(0, 8)}…{runId.slice(-8)}
-        </span>
-
-        {/* Workflow status badge */}
-        {data?.status && (() => {
-          const s = data.status;
-          const cls = s === "completed" ? "badge-pass"
-                    : s === "blocked"   ? "badge-block"
-                    : s === "failed"    ? "badge-block"
-                    : s === "running"   ? "badge-blue"
-                    : "badge-muted";
-          return <span className={cls}>{s.toUpperCase()}</span>;
-        })()}
-
-        {/* Compliance status badge */}
-        {compStatus && (
-          <span style={{
-            fontFamily:      "'JetBrains Mono', monospace",
-            fontSize:        "0.6rem",
-            fontWeight:      700,
-            color:           cc,
-            backgroundColor: `${cc}18`,
-            border:          `1px solid ${cc}40`,
-            padding:         "3px 10px",
-            borderRadius:    "9999px",
-            flexShrink:      0,
-          }}>
-            {compStatus}
-          </span>
-        )}
-
-        {/* Summary text (truncated) */}
-        {summaryText && (
-          <>
-            <div style={{ width: "1px", height: "18px", backgroundColor: "var(--border)", flexShrink: 0 }} />
-            <span style={{
-              fontFamily:    "'JetBrains Mono', monospace",
-              fontSize:      "0.58rem",
-              color:         "var(--text-muted)",
-              overflow:      "hidden",
-              textOverflow:  "ellipsis",
-              whiteSpace:    "nowrap",
-              flex:          1,
-              minWidth:      0,
-            }}>
-              {summaryText}
-            </span>
-          </>
-        )}
+    <div style={{ padding: "20px", backgroundColor: "var(--bg-primary)", minHeight: "100%" }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "12px", alignItems: "center", marginBottom: "16px" }}>
+        <button onClick={onBack} style={{ backgroundColor: "transparent", border: "1px solid #1e293b", color: "var(--text-secondary)", cursor: "pointer", fontFamily: "'JetBrains Mono', monospace", fontSize: "0.62rem", padding: "7px 12px" }}>BACK</button>
+        <div style={{ flex: "1 1 260px" }}>
+          <h1 style={{ margin: 0, color: "var(--text-primary)", fontFamily: "'Space Grotesk', sans-serif", fontSize: "1rem" }}>DECLARATION REVIEW</h1>
+          <p style={{ margin: "3px 0 0", color: "var(--text-secondary)", fontFamily: "'JetBrains Mono', monospace", fontSize: "0.6rem" }}>RUN {runId.slice(0, 8)} | TWO-DOCUMENT ANALYSIS | {isDemoMode ? "DEMO" : "LIVE"}</p>
+        </div>
+        <span style={{ ...badge, color: "var(--accent-blue)", backgroundColor: "rgba(37,99,235,0.1)", border: "1px solid rgba(59,130,246,0.3)" }}>WORKFLOW {String(data.status).toUpperCase()}</span>
+        <span style={{ ...badge, color: tone(complianceStatus), backgroundColor: `${tone(complianceStatus)}18`, border: `1px solid ${tone(complianceStatus)}40` }}>COMPLIANCE {String(complianceStatus ?? "pending").toUpperCase()}</span>
       </div>
 
-      {/* ── Three-panel body ──────────────────────────────────────────────── */}
-      <div style={{ display: "flex", height: "calc(100vh - 120px)", overflow: "hidden" }}>
+      <div style={{ ...box, padding: "14px 16px", marginBottom: "16px", color: "var(--text-primary)", fontFamily: "'JetBrains Mono', monospace", fontSize: "0.67rem", lineHeight: 1.7 }}>
+        {result.summary ?? "The declaration is still being assembled. Extracted data and trace details will appear here as the run progresses."}
+      </div>
 
-        {/* ═══════════════════════════════════════════════════════════════════
-            LEFT PANEL — Source Document / PDF Viewer (35%)
-        ═══════════════════════════════════════════════════════════════════ */}
-        <div style={{
-          width:        "35%",
-          borderRight:  "1px solid #1e293b",
-          display:      "flex",
-          flexDirection:"column",
-          overflow:     "hidden",
-          flexShrink:   0,
-        }}>
-          <PanelHeader
-            accent="var(--accent-blue)"
-            title="SOURCE DOCUMENT"
-            right={
-              <div style={{ display: "flex", gap: "6px" }}>
-                {(["invoice", "bl"] as const).map((src) => (
-                  <button
-                    key={src}
-                    onClick={() => setDocSource(src)}
-                    style={{
-                      fontFamily:      "'JetBrains Mono', monospace",
-                      fontSize:        "0.58rem",
-                      fontWeight:      700,
-                      letterSpacing:   "0.08em",
-                      padding:         "3px 10px",
-                      cursor:          "pointer",
-                      backgroundColor: docSource === src ? "rgba(37, 99, 235, 0.15)" : "transparent",
-                      border:          `1px solid ${docSource === src ? "var(--accent-blue)" : "var(--border)"}`,
-                      color:           docSource === src ? "var(--accent-blue)" : "var(--text-secondary)",
-                      transition:      "all 0.15s",
-                    }}
-                  >
-                    {src === "invoice" ? "INVOICE" : "B/L"}
-                  </button>
-                ))}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "16px", alignItems: "stretch" }}>
+        <div style={{ ...box, flex: "1.45 1 420px", minWidth: "320px", padding: "14px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: "8px", marginBottom: "12px", alignItems: "center" }}>
+            <span style={{ color: "var(--text-muted)", fontFamily: "'Space Grotesk', sans-serif", fontSize: "0.75rem", fontWeight: 700 }}>DOCUMENT VIEWER</span>
+            <div style={{ display: "flex", gap: "6px" }}>
+              {(["invoice", "bl"] as const).map((name) => (
+                <button key={name} onClick={() => setActivePdf(name)} style={{ backgroundColor: activePdf === name ? "rgba(37,99,235,0.16)" : "transparent", border: activePdf === name ? "1px solid rgba(59,130,246,0.45)" : "1px solid #1e293b", color: activePdf === name ? "var(--accent-blue)" : "var(--text-secondary)", cursor: "pointer", fontFamily: "'JetBrains Mono', monospace", fontSize: "0.56rem", padding: "4px 8px" }}>{name === "invoice" ? "INVOICE" : "B/L"}</button>
+              ))}
+            </div>
+          </div>
+          <PDFViewerPanel runId={runId} source={activePdf} pdfUrl={activePdf === "invoice" ? data.invoice_pdf_url ?? null : data.bl_pdf_url ?? null} pageWidth={700} />
+        </div>
+
+        <div style={{ display: "flex", flexDirection: "column", gap: "16px", flex: "1.1 1 340px", minWidth: "320px" }}>
+          <div style={{ ...box, padding: "14px", maxHeight: "520px", overflowY: "auto" }}>
+            <div style={{ color: "var(--text-muted)", fontFamily: "'Space Grotesk', sans-serif", fontSize: "0.75rem", fontWeight: 700, marginBottom: "12px" }}>DECLARATION DATA</div>
+            {(currentPhase !== "blocked" || data.status === "blocked" || complianceStatus === "BLOCK") && (
+              <div style={{ backgroundColor: currentPhase === "completed" ? "rgba(22,163,74,0.07)" : currentPhase === "resuming" ? "rgba(37,99,235,0.06)" : "rgba(220,38,38,0.05)", border: `1px solid ${currentPhase === "completed" ? "rgba(34,197,94,0.25)" : currentPhase === "resuming" ? "#1e3a5f" : "rgba(239,68,68,0.2)"}`, borderLeft: `3px solid ${currentPhase === "completed" ? "#22c55e" : currentPhase === "resuming" ? "#3B82F6" : "#ef4444"}`, marginBottom: "12px", padding: "12px" }}>
+                <div style={{ color: currentPhase === "completed" ? "var(--accent-green)" : currentPhase === "resuming" ? "var(--accent-blue)" : "var(--accent-red)", fontFamily: "'JetBrains Mono', monospace", fontSize: "0.62rem", fontWeight: 700, marginBottom: "8px" }}>
+                  {currentPhase === "completed" ? "CORRECTIONS ACCEPTED" : currentPhase === "resuming" ? "RESUMING PIPELINE" : "HUMAN REVIEW REQUIRED"}
+                </div>
+                {currentPhase === "blocked" && (
+                  <>
+                    <div style={{ color: "var(--text-secondary)", fontFamily: "'JetBrains Mono', monospace", fontSize: "0.62rem", lineHeight: 1.6, marginBottom: "8px" }}>{issues[0]?.message ?? "A blocking validation issue needs a corrected value before clearance can continue."}</div>
+                    <input type="number" value={correctedWeight} onChange={(e) => setCorrectedWeight(e.target.value)} placeholder="Corrected gross weight" style={{ width: "100%", marginBottom: "8px", backgroundColor: "var(--bg-primary)", border: "1px solid #1e293b", color: "var(--accent-blue)", fontFamily: "'JetBrains Mono', monospace", fontSize: "0.72rem", padding: "8px 10px" }} />
+                    <button onClick={submitResume} disabled={resumeMutation.isPending} style={{ width: "100%", backgroundColor: "var(--accent-red)", border: "1px solid #ef4444", color: "#fff", cursor: "pointer", fontFamily: "'JetBrains Mono', monospace", fontSize: "0.62rem", fontWeight: 700, padding: "9px" }}>SUBMIT CORRECTION</button>
+                  </>
+                )}
+                {currentPhase !== "blocked" && <div style={{ color: "var(--text-secondary)", fontFamily: "'JetBrains Mono', monospace", fontSize: "0.62rem" }}>{currentPhase === "completed" ? "Validation finished with the corrected data." : "Re-validating the invoice and bill of lading."}</div>}
               </div>
-            }
-          />
+            )}
+            {resumeError && <div style={{ color: "#fca5a5", fontFamily: "'JetBrains Mono', monospace", fontSize: "0.6rem", marginBottom: "10px" }}>{resumeError}</div>}
+            <div style={{ color: "var(--text-muted)", fontFamily: "'JetBrains Mono', monospace", fontSize: "0.57rem", marginBottom: "6px" }}>INVOICE FIELDS</div>
+            {fields(invoice).map(([k, v]) => <div key={k} style={{ borderBottom: "1px solid #0f172a", padding: "7px 0", color: "var(--text-primary)", fontFamily: "'JetBrains Mono', monospace", fontSize: "0.65rem" }}>{label(k)}: <span style={{ color: "var(--text-secondary)" }}>{String(v)}</span></div>)}
+            <div style={{ color: "var(--text-muted)", fontFamily: "'JetBrains Mono', monospace", fontSize: "0.57rem", margin: "14px 0 6px" }}>BILL OF LADING FIELDS</div>
+            {fields(bill).map(([k, v]) => <div key={k} style={{ borderBottom: "1px solid #0f172a", padding: "7px 0", color: "var(--text-primary)", fontFamily: "'JetBrains Mono', monospace", fontSize: "0.65rem" }}>{label(k)}: <span style={{ color: "var(--text-secondary)" }}>{String(v)}</span></div>)}
+            <div style={{ color: "var(--text-muted)", fontFamily: "'JetBrains Mono', monospace", fontSize: "0.57rem", margin: "14px 0 6px" }}>LINE ITEMS / HS CLASSIFICATION</div>
+            {lineItems.length ? lineItems.map((item: AnyMap, i: number) => <div key={`${item.description}-${i}`} style={{ borderBottom: "1px solid #0f172a", padding: "8px 0" }}><div style={{ color: "var(--text-primary)", fontFamily: "'JetBrains Mono', monospace", fontSize: "0.64rem", marginBottom: "4px" }}>{item.description ?? `Line item ${i + 1}`}</div><div style={{ color: "var(--text-secondary)", fontFamily: "'JetBrains Mono', monospace", fontSize: "0.58rem" }}>QTY {item.quantity ?? "-"} | UNIT {item.unit_price ?? "-"} | HS {item.hs_code ?? "UNASSIGNED"}</div></div>) : <div style={{ color: "var(--text-muted)", fontFamily: "'JetBrains Mono', monospace", fontSize: "0.62rem" }}>No line items available yet.</div>}
+          </div>
 
-          <div style={{
-            flex:            1,
-            overflowY:       "auto",
-            overflowX:       "hidden",
-            padding:         "16px",
-            backgroundColor: "var(--bg-card)",
-          }}>
-            <PDFViewerPanel
-              runId={runId}
-              pdfUrl={null}
-              source={docSource}
-              pageWidth={320}
-            />
+          <div style={{ ...box, padding: "14px", display: "flex", flexDirection: "column", minHeight: "320px" }}>
+            <div style={{ color: "var(--text-muted)", fontFamily: "'Space Grotesk', sans-serif", fontSize: "0.75rem", fontWeight: 700, marginBottom: "12px" }}>BILL CHAT</div>
+            <div style={{ flex: 1, overflowY: "auto", marginBottom: "10px" }}>
+              {chatHistory.map((entry: AnyMap, i: number) => <div key={`${entry.role}-${i}`} style={{ backgroundColor: entry.role === "user" ? "rgba(15,23,42,0.7)" : "rgba(37,99,235,0.08)", border: `1px solid ${entry.role === "user" ? "#1e293b" : "rgba(59,130,246,0.2)"}`, borderLeft: `3px solid ${entry.role === "user" ? "#0f172a" : "#3B82F6"}`, marginBottom: "10px", padding: "10px 12px" }}><div style={{ color: entry.role === "user" ? "var(--text-secondary)" : "var(--accent-blue)", fontFamily: "'JetBrains Mono', monospace", fontSize: "0.54rem", fontWeight: 700, marginBottom: "5px" }}>{entry.role === "user" ? "YOU" : "APP"}</div><div style={{ color: "var(--text-primary)", fontFamily: "'JetBrains Mono', monospace", fontSize: "0.64rem", lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{entry.content}</div>{entry.updated && entry.changes?.length ? <div style={{ marginTop: "6px", color: "var(--accent-green)", fontFamily: "'JetBrains Mono', monospace", fontSize: "0.56rem" }}>{entry.changes.join(" | ")}</div> : null}</div>)}
+            </div>
+            {chatError && <div style={{ color: "#fca5a5", fontFamily: "'JetBrains Mono', monospace", fontSize: "0.6rem", marginBottom: "8px" }}>{chatError}</div>}
+            <div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "10px" }}>
+              {["Summarize the shipment", "What compliance issues are open?", "Change bill of lading gross weight to 860"].map((value) => <button key={value} onClick={() => setChatInput(value)} style={{ backgroundColor: "rgba(37,99,235,0.08)", border: "1px solid rgba(59,130,246,0.25)", color: "var(--accent-blue)", cursor: "pointer", fontFamily: "'JetBrains Mono', monospace", fontSize: "0.56rem", padding: "5px 8px" }}>{value}</button>)}
+            </div>
+            <textarea value={chatInput} onChange={(e) => setChatInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendChat(); } }} placeholder="Ask about the bills or request a field update." style={{ width: "100%", minHeight: "86px", backgroundColor: "var(--bg-primary)", border: "1px solid #1e293b", color: "var(--text-primary)", fontFamily: "'JetBrains Mono', monospace", fontSize: "0.64rem", padding: "10px 12px", resize: "vertical" }} />
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "10px", marginTop: "10px" }}>
+              <span style={{ color: "var(--text-muted)", fontFamily: "'JetBrains Mono', monospace", fontSize: "0.55rem" }}>Ctrl+Enter to send. Edits re-run validation.</span>
+              <button onClick={sendChat} disabled={!chatInput.trim() || chatMutation.isPending} style={{ backgroundColor: !chatInput.trim() || chatMutation.isPending ? "rgba(37,99,235,0.35)" : "rgba(37,99,235,0.14)", border: "1px solid rgba(59,130,246,0.45)", color: "var(--accent-blue)", cursor: !chatInput.trim() || chatMutation.isPending ? "not-allowed" : "pointer", fontFamily: "'JetBrains Mono', monospace", fontSize: "0.62rem", fontWeight: 700, padding: "8px 14px" }}>{chatMutation.isPending ? "SENDING..." : "SEND"}</button>
+            </div>
           </div>
         </div>
 
-        {/* ═══════════════════════════════════════════════════════════════════
-            CENTER PANEL — Extracted Fields (35%)
-        ═══════════════════════════════════════════════════════════════════ */}
-        <div style={{
-          width:        "35%",
-          borderRight:  "1px solid #1e293b",
-          display:      "flex",
-          flexDirection:"column",
-          overflow:     "hidden",
-          flexShrink:   0,
-        }}>
-          <PanelHeader
-            accent="var(--accent-green)"
-            title="EXTRACTED FIELDS"
-            sub={bboxes.length > 0 ? `${bboxes.length} FIELDS` : undefined}
-          />
-
-          <div style={{
-            flex:            1,
-            overflowY:       "auto",
-            padding:         "12px 16px",
-            backgroundColor: "var(--bg-card)",
-          }}>
-
-            {/* ── Compliance issues ──────────────────────────────────────── */}
-            {compliance?.issues && compliance.issues.length > 0 && (
-              <div style={{ marginBottom: "18px" }}>
-                <div style={{
-                  fontFamily:    "'JetBrains Mono', monospace",
-                  fontSize:      "0.58rem",
-                  color:         "var(--text-muted)",
-                  letterSpacing: "0.14em",
-                  marginBottom:  "10px",
-                  paddingBottom: "6px",
-                  borderBottom:  "1px solid #111122",
-                }}>
-                  ─ COMPLIANCE ISSUES ({compliance.issues.length}) ─
-                </div>
-                {compliance.issues.map((issue, i) => {
-                  const isBlock = issue.severity === "block";
-                  const ic = isBlock ? "var(--accent-red)" : "var(--accent-amber)";
-                  const isWeightConflict = issue.field.includes("gross_weight");
-                  return (
-                    <div
-                      key={i}
-                      style={{
-                        borderLeft:      `2px solid ${ic}`,
-                        padding:         "8px 10px",
-                        marginBottom:    "6px",
-                        backgroundColor: `${ic}08`,
-                        boxShadow:       isBlock ? `0 0 12px ${ic}20, inset 0 0 0 1px ${ic}18` : undefined,
-                      }}
-                    >
-                      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "3px" }}>
-                        <span style={{
-                          fontFamily:      "'JetBrains Mono', monospace",
-                          fontSize:        "0.58rem",
-                          fontWeight:      700,
-                          color:           ic,
-                          letterSpacing:   "0.08em",
-                          animation:       isBlock ? "pulse-dot 1.4s ease-in-out infinite" : undefined,
-                        }}>
-                          [{issue.severity.toUpperCase()}]
-                        </span>
-                        <span style={{
-                          fontFamily: "'JetBrains Mono', monospace",
-                          fontSize:   "0.6rem",
-                          color:      "var(--text-muted)",
-                        }}>
-                          {issue.field}
-                        </span>
-                      </div>
-                      <p style={{
-                        fontFamily: "'JetBrains Mono', monospace",
-                        fontSize:   "0.63rem",
-                        color:      "var(--text-secondary)",
-                        lineHeight: 1.5,
-                        margin:     0,
-                      }}>
-                        {issue.message}
-                      </p>
-                      {isWeightConflict && isBlock && (
-                        <div style={{
-                          marginTop:       "6px",
-                          padding:         "5px 8px",
-                          backgroundColor: "rgba(220, 38, 38, 0.1)",
-                          border:          "1px solid rgba(239,68,68,0.25)",
-                          fontFamily:      "'JetBrains Mono', monospace",
-                          fontSize:        "0.62rem",
-                          color:           "#fca5a5",
-                          letterSpacing:   "0.04em",
-                        }}>
-                          Invoice: 820 kg&nbsp;&nbsp;≠&nbsp;&nbsp;B/L: 860 kg&nbsp;&nbsp;
-                          <span style={{ color: "var(--accent-red)", fontWeight: 700 }}>(Δ 40 kg)</span>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-
-            {/* ── BBox-derived invoice fields ────────────────────────────── */}
-            {bboxes.length > 0 && (
-              <div>
-                <div style={{
-                  fontFamily:    "'JetBrains Mono', monospace",
-                  fontSize:      "0.58rem",
-                  color:         "var(--text-muted)",
-                  letterSpacing: "0.14em",
-                  marginBottom:  "6px",
-                  paddingBottom: "6px",
-                  borderBottom:  "1px solid #111122",
-                }}>
-                  ─ INVOICE FIELDS ─
-                </div>
-                {bboxes.map((b, i) => {
-                  const issue = compliance?.issues?.find(
-                    (iss) => iss.field.includes(b.field_name)
-                  );
-                  return (
-                    <FieldRow
-                      key={i}
-                      name={b.field_name}
-                      value={b.value}
-                      confidence={b.confidence}
-                      issueLevel={issue?.severity as "warn" | "block" | undefined}
-                    />
-                  );
-                })}
-              </div>
-            )}
-
-            {/* ── Declaration-derived invoice fields (fallback) ──────────── */}
-            {bboxes.length === 0 && declaration?.invoice != null && (() => {
-              const inv = declaration.invoice as Record<string, unknown>;
-              const scalar = Object.entries(inv).filter(
-                ([, v]) => v !== null && v !== undefined && typeof v !== "object"
-              );
-              return scalar.length > 0 ? (
-                <div>
-                  <div style={{
-                    fontFamily:    "'JetBrains Mono', monospace",
-                    fontSize:      "0.58rem",
-                    color:         "var(--text-muted)",
-                    letterSpacing: "0.14em",
-                    marginBottom:  "6px",
-                    paddingBottom: "6px",
-                    borderBottom:  "1px solid #111122",
-                  }}>
-                    ─ INVOICE FIELDS ─
-                  </div>
-                  {scalar.map(([k, v]) => {
-                    const issue = compliance?.issues?.find((iss) => iss.field.includes(k));
-                    return (
-                      <FieldRow
-                        key={k}
-                        name={k}
-                        value={String(v)}
-                        issueLevel={issue?.severity as "warn" | "block" | undefined}
-                      />
-                    );
-                  })}
-                </div>
-              ) : null;
-            })()}
-
-            {/* ── Demo HS-code line items ────────────────────────────────── */}
-            {isDemoMode && (
-              <div style={{ marginTop: "16px" }}>
-                <div style={{
-                  fontFamily:    "'JetBrains Mono', monospace",
-                  fontSize:      "0.58rem",
-                  color:         "var(--text-muted)",
-                  letterSpacing: "0.14em",
-                  marginBottom:  "8px",
-                  paddingBottom: "6px",
-                  borderBottom:  "1px solid #111122",
-                }}>
-                  ─ LINE ITEMS / HS CLASSIFICATION ─
-                </div>
-                {DEMO_WORKFLOW.line_items.map((li, i) => (
-                  <div key={i} style={{
-                    padding:      "10px 0",
-                    borderBottom: "1px solid #0f172a",
-                  }}>
-                    <div style={{ display: "flex", alignItems: "flex-start", gap: "10px", marginBottom: "5px" }}>
-                      <span style={{
-                        fontFamily:  "'JetBrains Mono', monospace",
-                        fontSize:    "0.62rem",
-                        color:       "var(--text-primary)",
-                        flex:        1,
-                        lineHeight:  1.4,
-                      }}>
-                        {li.description}
-                      </span>
-                    </div>
-                    <div style={{ display: "flex", gap: "16px", flexWrap: "wrap" }}>
-                      <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "0.58rem", color: "var(--text-secondary)" }}>
-                        QTY: <span style={{ color: "var(--text-muted)" }}>{li.quantity}</span>
-                      </span>
-                      <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "0.58rem", color: "var(--text-secondary)" }}>
-                        UNIT: <span style={{ color: "var(--text-muted)" }}>${li.unit_price}</span>
-                      </span>
-                      <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "0.58rem", color: "var(--text-secondary)" }}>
-                        TOTAL: <span style={{ color: "var(--text-primary)" }}>${li.total.toLocaleString()}</span>
-                      </span>
-                    </div>
-                    {/* Best HS candidate */}
-                    <div style={{ marginTop: "5px", display: "flex", alignItems: "center", gap: "8px" }}>
-                      <span style={{
-                        fontFamily:    "'JetBrains Mono', monospace",
-                        fontSize:      "0.6rem",
-                        color:         "var(--accent-blue)",
-                        fontWeight:    700,
-                        backgroundColor: "rgba(37, 99, 235, 0.1)",
-                        border:        "1px solid rgba(59,130,246,0.3)",
-                        padding:       "1px 7px",
-                        letterSpacing: "0.05em",
-                      }}>
-                        HTS: {li.hs_code}
-                      </span>
-                      <span style={{
-                        fontFamily: "'JetBrains Mono', monospace",
-                        fontSize:   "0.58rem",
-                        color:      "var(--text-secondary)",
-                        overflow:   "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                      }}>
-                        {li.hs_candidates[0].description}
-                      </span>
-                      <ConfBadge v={li.hs_candidates[0].confidence} />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {/* ── Empty state ────────────────────────────────────────────── */}
-            {bboxes.length === 0 && !declaration?.invoice && !isDemoMode && (
-              <div style={{
-                textAlign:  "center",
-                padding:    "48px 16px",
-                color:      "var(--text-muted)",
-                fontFamily: "'JetBrains Mono', monospace",
-                fontSize:   "0.68rem",
-                letterSpacing: "0.08em",
-              }}>
-                {data?.status === "running" || data?.status === "queued"
-                  ? "[ EXTRACTION IN PROGRESS... ]"
-                  : "[ NO FIELDS AVAILABLE ]"}
-              </div>
-            )}
-
-            {/* ── DEMO HITL: Human Review Panel ──────────────────────────── */}
-            {(needsHITL || isResuming || (isDemoMode && demoPhase === "completed") || (!isDemoMode && realPhase === "completed")) && (
-              <HitlPanel
-                phase={currentPhase as any}
-                correctedWeight={correctedWeight}
-                onWeightChange={setCorrectedWeight}
-                issue={isDemoMode ? DEMO_WORKFLOW.compliance_issues[0] : (data?.result as any)?.compliance_issues?.[0]}
-                invoiceWeight={isDemoMode ? 820 : (data?.result as any)?.invoice?.gross_weight_kg}
-                blWeight={isDemoMode ? 860 : (data?.result as any)?.bill_of_lading?.gross_weight_kg}
-                onSubmit={async () => {
-                  if (isDemoMode) {
-                    submitCorrections(parseFloat(correctedWeight) || 860);
-                  } else {
-                    setRealPhase("resuming");
-                    try {
-                      await fetch(`http://localhost:8000/api/v1/workflow/resume/${runId}`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ gross_weight_kg: Number(correctedWeight) || 860 })
-                      });
-                      setTimeout(() => setRealPhase("completed"), 2500);
-                    } catch (e) {
-                      console.error(e);
-                      setRealPhase("blocked");
-                    }
-                  }
-                }}
-              />
-            )}
-          </div>
+        <div style={{ ...box, flex: "0.9 1 300px", minWidth: "300px", padding: "14px", maxHeight: "860px", overflowY: "auto" }}>
+          <div style={{ color: "var(--text-muted)", fontFamily: "'Space Grotesk', sans-serif", fontSize: "0.75rem", fontWeight: 700, marginBottom: "12px" }}>AGENT TRACE</div>
+          {data.steps.length ? data.steps.map((step) => <div key={step.name} style={{ borderLeft: `3px solid ${step.status === "completed" ? "var(--accent-green)" : step.status === "blocked" || step.status === "failed" ? "var(--accent-red)" : step.status === "running" ? "var(--accent-blue)" : "var(--border)"}`, paddingLeft: "10px", marginBottom: "12px" }}><div style={{ color: "var(--text-primary)", fontFamily: "'JetBrains Mono', monospace", fontSize: "0.62rem", fontWeight: 700 }}>{label(step.name)}</div><div style={{ color: "var(--text-secondary)", fontFamily: "'JetBrains Mono', monospace", fontSize: "0.57rem", margin: "3px 0 5px" }}>{String(step.status).toUpperCase()}</div>{step.output?.reasoning_note ? <div style={{ color: "var(--text-secondary)", fontFamily: "'JetBrains Mono', monospace", fontSize: "0.61rem", lineHeight: 1.6 }}>{step.output.reasoning_note}</div> : null}</div>) : <div style={{ color: "var(--text-muted)", fontFamily: "'JetBrains Mono', monospace", fontSize: "0.62rem" }}>[ NO TRACE DATA ]</div>}
         </div>
-
-        {/* ═══════════════════════════════════════════════════════════════════
-            RIGHT PANEL — Agent Trace (30%)
-        ═══════════════════════════════════════════════════════════════════ */}
-        <div style={{
-          flex:         1,
-          display:      "flex",
-          flexDirection:"column",
-          overflow:     "hidden",
-          minWidth:     0,
-        }}>
-          <PanelHeader
-            accent="#a78bfa"
-            title="AGENT TRACE"
-            sub={steps.length > 0 ? `${steps.length} NODES` : undefined}
-          />
-
-          <div style={{
-            flex:            1,
-            overflowY:       "auto",
-            padding:         "14px 16px",
-            backgroundColor: "var(--bg-card)",
-          }}>
-            {steps.length === 0 ? (
-              <div style={{
-                textAlign:  "center",
-                padding:    "48px 16px",
-                color:      "var(--text-muted)",
-                fontFamily: "'JetBrains Mono', monospace",
-                fontSize:   "0.68rem",
-                letterSpacing: "0.08em",
-              }}>
-                {data?.status === "running" || data?.status === "queued"
-                  ? "[ PIPELINE EXECUTING... ]"
-                  : "[ NO TRACE DATA ]"}
-              </div>
-            ) : (
-              <div style={{ position: "relative" }}>
-                {/* Vertical timeline line */}
-                <div style={{
-                  position:        "absolute",
-                  left:            "7px",
-                  top:             "16px",
-                  bottom:          0,
-                  width:           "1px",
-                  backgroundColor: "var(--border)",
-                }} />
-
-                {steps.map((step, i) => (
-                  <TraceNode
-                    key={i}
-                    step={step}
-                    expanded={expandedNode === step.name}
-                    onToggle={() => toggleNode(step.name)}
-                  />
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-
       </div>
     </div>
   );

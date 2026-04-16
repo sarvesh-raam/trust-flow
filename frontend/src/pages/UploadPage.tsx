@@ -118,11 +118,9 @@ function Label({ children }: { children: React.ReactNode }) {
   );
 }
 
-interface UploadPageProps {
-  onDemoLaunch?: () => void;
-}
+interface UploadPageProps {}
 
-export default function UploadPage({ onDemoLaunch }: UploadPageProps) {
+export default function UploadPage({}: UploadPageProps) {
   const [invoiceFile, setInvoiceFile] = useState<File | null>(null);
   const [blFile,      setBlFile]      = useState<File | null>(null);
   const [lastDocId,   setLastDocId]   = useState<string | null>(null);

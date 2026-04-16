@@ -9,6 +9,7 @@ const STATUS_CONFIG: Record<WorkflowStatus, { label: string; cls: string }> = {
   failed:      { label: "FAIL",    cls: "badge-block" },
   running:     { label: "RUNNING", cls: "badge-blue"  },
   queued:      { label: "QUEUED",  cls: "badge-muted" },
+  uploaded:    { label: "UPLOADED", cls: "badge-muted" },
   interrupted: { label: "PAUSED",  cls: "badge-warn"  },
 };
 
@@ -33,10 +34,18 @@ function ComplianceBadge({ result }: { result: Record<string, unknown> }) {
 
 // ── Step count bar (mini pipeline progress) ────────────────────────────────────
 const PIPELINE_STEPS = [
-  "ingest", "preprocess", "ocr_extract", "field_extract",
-  "reconcile", "hs_retrieve", "compliance_reason",
-  "deterministic_validate", "country_validate",
-  "declaration_generate", "audit_trace",
+  "ingest",
+  "preprocess",
+  "ocr_extract",
+  "vision_adjudication",
+  "field_extract",
+  "reconcile",
+  "hs_rag",
+  "deterministic_validate",
+  "interrupt_node",
+  "country_validate",
+  "declaration_generate",
+  "audit_trace",
 ];
 
 function PipelineBar({ steps }: { steps: WorkflowResponse["steps"] }) {
@@ -45,8 +54,10 @@ function PipelineBar({ steps }: { steps: WorkflowResponse["steps"] }) {
       .filter((s) => s.status === "completed")
       .map((s) => s.name)
   );
-  const total = PIPELINE_STEPS.length;
-  const count = PIPELINE_STEPS.filter((n) => done.has(n)).length;
+  const seen = new Set(steps.map((step) => step.name));
+  const relevantSteps = PIPELINE_STEPS.filter((name) => seen.has(name));
+  const total = relevantSteps.length || PIPELINE_STEPS.length;
+  const count = (relevantSteps.length ? relevantSteps : PIPELINE_STEPS).filter((n) => done.has(n)).length;
   const pct   = Math.round((count / total) * 100);
 
   return (

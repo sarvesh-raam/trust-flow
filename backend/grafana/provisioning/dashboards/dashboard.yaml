@@ -5,3 +5,8 @@ providers:
     type: file
     options:
       path: /etc/grafana/provisioning/dashboards
+  - name: trustflow-ops
+    folder: TrustFlow
+    type: file
+    options:
+      path: /etc/grafana/provisioning/dashboards

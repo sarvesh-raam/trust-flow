@@ -5,10 +5,20 @@
   "refresh": "5s",
   "panels": [
     {
+      "id": 100,
+      "title": "Navigation",
+      "type": "text",
+      "gridPos": {"h": 2, "w": 24, "x": 0, "y": 0},
+      "options": {
+        "content": "<div style='text-align: center; font-size: 1.2em;'>\n  <a href='/d/trust-flow-metrics'>📊 View Performance & Quality Metrics Dashboard</a>\n</div>",
+        "mode": "html"
+      }
+    },
+    {
       "id": 1,
       "title": "Pipeline Runs — Live Log Stream",
       "type": "logs",
-      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 0},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 2},
       "datasource": {"type": "loki", "uid": "loki"},
       "targets": [{
         "expr": "{service=\"hackstrom-backend\"}",
@@ -19,7 +29,7 @@
       "id": 2,
       "title": "Worker Task Events",
       "type": "logs",
-      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 10},
       "datasource": {"type": "loki", "uid": "loki"},
       "targets": [{
         "expr": "{service=\"hackstrom-backend\"} |= \"task\"",
@@ -30,7 +40,7 @@
       "id": 3,
       "title": "BLOCK Events",
       "type": "logs",
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 18},
       "datasource": {"type": "loki", "uid": "loki"},
       "targets": [{
         "expr": "{service=\"hackstrom-backend\"} |= \"BLOCK\"",
@@ -41,7 +51,7 @@
       "id": 4,
       "title": "PASS / WARN Events",
       "type": "logs",
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 18},
       "datasource": {"type": "loki", "uid": "loki"},
       "targets": [{
         "expr": "{service=\"hackstrom-backend\"} |= \"PASS\" or {service=\"hackstrom-backend\"} |= \"WARN\"",
