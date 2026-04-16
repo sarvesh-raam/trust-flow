@@ -6,14 +6,19 @@ from __future__ import annotations
 from dotenv import load_dotenv
 load_dotenv()
 
+import os
+import logging
+
 import structlog
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from routes.upload import router as upload_router
 from routes.workflow import router as workflow_router
-from fastapi.staticfiles import StaticFiles
+from routes.auth_routes import router as auth_router
+from dependencies import get_current_user
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -26,6 +31,21 @@ structlog.configure(
         structlog.dev.ConsoleRenderer(),
     ]
 )
+
+loki_url = os.getenv("LOKI_URL")
+if loki_url:
+    try:
+        import logging_loki
+        loki_handler = logging_loki.LokiHandler(
+            url=loki_url,
+            tags={"service": "hackstrom-backend", "event": "hackstrom26"},
+            version="1",
+        )
+        logging.getLogger().addHandler(loki_handler)
+    except Exception as e:
+        print(f"Loki handler failed to init: {e} — continuing without Loki")
+
+logger = logging.getLogger("hackstrom")
 log = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -56,14 +76,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-import os
-from fastapi import Depends
-from dependencies import get_current_user
-from routes.auth_routes import router as auth_router
-
+# ---------------------------------------------------------------------------
+# Static files + startup DB init
+# ---------------------------------------------------------------------------
 uploads_dir = os.path.join(os.path.dirname(__file__), "uploads")
 os.makedirs(uploads_dir, exist_ok=True)
+os.makedirs("data", exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
+
+from workflow_db import db as workflow_db_instance
+from sqlmodel import SQLModel
+try:
+    # Explicitly ensure all tables are created on startup
+    SQLModel.metadata.create_all(workflow_db_instance._engine)
+    print("[DB] Tables successfully verified/created at startup")
+except Exception as e:
+    print(f"[DB] Fatal error during startup table creation: {e}")
 
 # ---------------------------------------------------------------------------
 # Routers
