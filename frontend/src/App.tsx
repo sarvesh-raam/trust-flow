@@ -4,7 +4,6 @@ import UploadPage from "@/pages/UploadPage";
 import WorkflowPage from "@/pages/WorkflowPage";
 import DeclarationPage from "@/pages/DeclarationPage";
 import LoginPage from "@/pages/LoginPage";
-import { useDemoMode } from "@/demo/DemoContext";
 import { useAuth } from "@/contexts/AuthContext";
 import { signOutUser } from "@/lib/firebase";
 
@@ -49,22 +48,22 @@ class ErrorBoundary extends Component<
             {this.state.message || "An unexpected error occurred."}
           </p>
           <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
-            <button
-              onClick={() => window.location.assign("/?demo=true")}
-              style={{
-                fontFamily: "'JetBrains Mono', monospace",
-                fontSize: "0.65rem",
-                fontWeight: 700,
-                letterSpacing: "0.12em",
-                padding: "8px 18px",
-                backgroundColor: "rgba(37, 99, 235, 0.12)",
-                border: "1px solid #3B82F6",
-                color: "var(--accent-blue)",
-                cursor: "pointer",
-              }}
-            >
-              LOAD DEMO MODE
-            </button>
+              <button
+                onClick={() => window.location.reload()}
+                style={{
+                  fontFamily: "'JetBrains Mono', monospace",
+                  fontSize: "0.65rem",
+                  fontWeight: 700,
+                  letterSpacing: "0.12em",
+                  padding: "8px 18px",
+                  backgroundColor: "rgba(37, 99, 235, 0.12)",
+                  border: "1px solid #3B82F6",
+                  color: "var(--accent-blue)",
+                  cursor: "pointer",
+                }}
+              >
+                RELOAD APP
+              </button>
             <button
               onClick={() => this.setState({ hasError: false, message: "" })}
               style={{
@@ -155,170 +154,6 @@ function NavTab({
   );
 }
 
-// ── Demo Mode Banner ──────────────────────────────────────────────────────────
-function DemoBanner() {
-  return (
-    <div
-      style={{
-        backgroundColor: "rgba(217, 119, 6, 0.08)",
-        borderBottom:    "1px solid rgba(245,158,11,0.35)",
-        padding:         "4px 16px",
-        display:         "flex",
-        alignItems:      "center",
-        justifyContent:  "center",
-        gap:             "10px",
-      }}
-    >
-      <span
-        style={{
-          display:         "inline-block",
-          width:           "6px",
-          height:          "6px",
-          borderRadius:    "50%",
-          backgroundColor: "var(--accent-amber)",
-          animation:       "pulse-dot 1.2s ease-in-out infinite",
-          flexShrink:      0,
-        }}
-      />
-      <span
-        style={{
-          fontFamily:    "'JetBrains Mono', monospace",
-          fontSize:      "0.6rem",
-          fontWeight:    700,
-          color:         "var(--accent-amber)",
-          letterSpacing: "0.14em",
-        }}
-      >
-        ⚡ DEMO MODE — Synthetic data | No backend required
-      </span>
-      <span
-        style={{
-          fontFamily:    "'JetBrains Mono', monospace",
-          fontSize:      "0.52rem",
-          color:         "#78350f",
-          letterSpacing: "0.07em",
-        }}
-      >
-        [Ctrl+Shift+D for script]
-      </span>
-    </div>
-  );
-}
-
-// ── Demo Script Overlay (Ctrl+Shift+D) ────────────────────────────────────────
-const DEMO_POINTS = [
-  { n: "01", label: "TWO-DOC INGEST",      body: "Commercial invoice + bill of lading uploaded as one atomic request. Both files stored, paths committed to SQLite." },
-  { n: "02", label: "DOCLING OCR",          body: "Docling + RapidOCR extracts text, tables and pixel-level bounding boxes from each PDF — no manual parsing." },
-  { n: "03", label: "LLM FIELD EXTRACT",    body: "Groq llama-3.3-70b-versatile via Instructor populates strict Pydantic models: InvoiceDocument and BillOfLading." },
-  { n: "04", label: "HS CODE RETRIEVAL",    body: "USITC HTS REST API first; falls back to semantic search over an embedded sample catalogue." },
-  { n: "05", label: "COMPLIANCE REASON",    body: "LLM selects the best HS code per line item and flags dual-use or restricted goods." },
-  { n: "06", label: "DETERMINISTIC CHECK",  body: "Rule engine validates: positive weights, B/L presence, vessel name — catches what the LLM might miss." },
-  { n: "07", label: "WEIGHT CONFLICT",      body: "Invoice: 820 kg vs B/L: 860 kg → 4.9% delta exceeds 5% threshold → BLOCK issued, pipeline pauses." },
-  { n: "08", label: "HITL RESUME",          body: "Operator corrects gross_weight_kg to 860 kg. State patch applied via LangGraph aupdate_state; pipeline re-enters at interrupt_node." },
-  { n: "09", label: "FINAL DECLARATION",    body: "12-node audit trail committed. Declaration generated with HS codes, compliance status PASS/WARN, and PDF bbox highlights." },
-] as const;
-
-function DemoScriptOverlay({ onClose }: { onClose: () => void }) {
-  return (
-    <div
-      style={{
-        position:        "fixed",
-        inset:           0,
-        zIndex:          9999,
-        display:         "flex",
-        alignItems:      "center",
-        justifyContent:  "center",
-        backgroundColor: "rgba(6,6,11,0.88)",
-        backdropFilter:  "blur(4px)",
-      }}
-      onClick={onClose}
-    >
-      <div
-        style={{
-          width:           "min(640px, calc(100vw - 32px))",
-          backgroundColor: "var(--bg-card)",
-          border:          "1px solid #1e293b",
-          borderTop:       "2px solid #3B82F6",
-          maxHeight:       "80vh",
-          overflowY:       "auto",
-          boxShadow:       "0 0 60px rgba(59,130,246,0.15)",
-        }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div style={{
-          padding:         "12px 20px",
-          borderBottom:    "1px solid #1e293b",
-          display:         "flex",
-          alignItems:      "center",
-          gap:             "10px",
-        }}>
-          <span style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700, fontSize: "0.75rem", color: "var(--accent-blue)", letterSpacing: "0.06em" }}>
-            DEMO SCRIPT
-          </span>
-          <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "0.55rem", color: "var(--text-muted)", marginLeft: "auto" }}>
-            ESC or click outside to close
-          </span>
-        </div>
-        {/* Talking points */}
-        <div style={{ padding: "16px 20px" }}>
-          {DEMO_POINTS.map((pt) => (
-            <div key={pt.n} style={{
-              display:      "flex",
-              gap:          "14px",
-              marginBottom: "14px",
-              alignItems:   "flex-start",
-            }}>
-              <span style={{
-                fontFamily:    "'JetBrains Mono', monospace",
-                fontSize:      "0.58rem",
-                fontWeight:    700,
-                color:         "var(--accent-blue)",
-                backgroundColor: "rgba(37, 99, 235, 0.1)",
-                border:        "1px solid rgba(59,130,246,0.3)",
-                padding:       "2px 7px",
-                flexShrink:    0,
-                alignSelf:     "flex-start",
-              }}>{pt.n}</span>
-              <div>
-                <p style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "0.62rem", fontWeight: 700, color: "var(--text-primary)", letterSpacing: "0.06em", marginBottom: "3px" }}>
-                  {pt.label}
-                </p>
-                <p style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "0.6rem", color: "var(--text-secondary)", lineHeight: 1.6 }}>
-                  {pt.body}
-                </p>
-              </div>
-            </div>
-          ))}
-        </div>
-        {/* Footer */}
-        <div style={{
-          borderTop:    "1px solid #1e293b",
-          padding:      "10px 20px",
-          display:      "flex",
-          justifyContent: "flex-end",
-        }}>
-          <button
-            onClick={onClose}
-            style={{
-              fontFamily:      "'JetBrains Mono', monospace",
-              fontSize:        "0.62rem",
-              fontWeight:      700,
-              letterSpacing:   "0.1em",
-              padding:         "6px 18px",
-              backgroundColor: "transparent",
-              border:          "1px solid #1e293b",
-              color:           "var(--text-secondary)",
-              cursor:          "pointer",
-            }}
-          >
-            CLOSE [ESC]
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 // ── User avatar + sign-out ────────────────────────────────────────────────────
 function UserMenu() {
@@ -377,26 +212,11 @@ function UserMenu() {
 // ── Root App ──────────────────────────────────────────────────────────────────
 export default function App() {
   const { user } = useAuth();
-  const { isDemoMode, demoRunId } = useDemoMode();
   const [tab, setTab] = useState<Tab>("upload");
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
-  const [scriptOpen, setScriptOpen] = useState(false);
-
-  // Ctrl+Shift+D opens the demo script overlay; Escape closes it
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.shiftKey && e.key === "D") {
-        e.preventDefault();
-        setScriptOpen((v) => !v);
-      }
-      if (e.key === "Escape") setScriptOpen(false);
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, []);
 
   const handleViewDeclaration = (runId: string) => {
-    setSelectedRunId(isDemoMode ? demoRunId : runId);
+    setSelectedRunId(runId);
     setTab("declaration");
   };
 
@@ -410,8 +230,8 @@ export default function App() {
     if (t !== "declaration") setSelectedRunId(null);
   };
 
-  // Show login page when not authenticated (demo mode bypasses auth)
-  if (!user && !isDemoMode) {
+  // Show login page when not authenticated
+  if (!user) {
     return (
       <ErrorBoundary>
         <LoginPage />
@@ -584,15 +404,12 @@ export default function App() {
         </div>
       </header>
 
-      {/* ── Demo mode amber banner ──────────────────────────────────────────── */}
-      {isDemoMode && <DemoBanner />}
+
 
       {/* ── Main content ────────────────────────────────────────────────────── */}
       <main style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
         {tab === "upload" && (
-          <UploadPage
-            onDemoLaunch={isDemoMode ? () => handleViewDeclaration(demoRunId) : undefined}
-          />
+          <UploadPage />
         )}
         {tab === "workflows" && (
           <WorkflowPage onViewDeclaration={handleViewDeclaration} />
@@ -602,8 +419,7 @@ export default function App() {
         )}
       </main>
 
-      {/* ── Demo script overlay ──────────────────────────────────────────────── */}
-      {scriptOpen && <DemoScriptOverlay onClose={() => setScriptOpen(false)} />}
+
     </div>
     </ErrorBoundary>
   );

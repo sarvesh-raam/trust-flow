@@ -34,3 +34,8 @@ ENV/
 # OS
 .DS_Store
 Thumbs.db
+
+# Project specific
+*.db
+backend/uploads/
+.temp_info.txt
