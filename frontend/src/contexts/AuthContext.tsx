@@ -9,6 +9,19 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType>({ user: null, loading: true });
 
+async function exchangeFirebaseToken(u: User): Promise<void> {
+  try {
+    const idToken = await u.getIdToken(/* forceRefresh */ false);
+    const { data } = await api.post("/auth/google", { firebase_token: idToken });
+    localStorage.setItem("access_token", data.access_token);
+  } catch (err) {
+    // Backend exchange failed — clear stale token but keep Firebase user in context.
+    // The UI is still protected by Firebase auth; backend routes are unprotected for hackathon.
+    console.warn("[AuthContext] Backend JWT exchange failed (backend may be starting):", err);
+    localStorage.removeItem("access_token");
+  }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser]       = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
@@ -16,16 +29,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (u) => {
       if (u) {
-        try {
-          const idToken = await u.getIdToken();
-          const { data } = await api.post("/auth/google", { firebase_token: idToken });
-          localStorage.setItem("access_token", data.access_token);
-          setUser(u);
-        } catch (err) {
-          console.error("Backend auth exchange failed:", err);
-          localStorage.removeItem("access_token");
-          setUser(null);
-        }
+        // Exchange Firebase ID token for backend JWT (non-blocking — failure keeps user logged in)
+        await exchangeFirebaseToken(u);
+        setUser(u);
       } else {
         localStorage.removeItem("access_token");
         setUser(null);
@@ -34,6 +40,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     });
     return unsubscribe;
   }, []);
+
+  // Auto-refresh backend JWT when Firebase token renews (every ~55 min)
+  useEffect(() => {
+    if (!user) return;
+    const interval = setInterval(async () => {
+      await exchangeFirebaseToken(user);
+    }, 55 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [user]);
 
   if (loading) {
     return (
