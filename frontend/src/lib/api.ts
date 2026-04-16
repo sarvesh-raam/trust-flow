@@ -2,12 +2,12 @@ import axios from "axios";
 
 // Dev: Vite proxy forwards /api → localhost:8000.
 // Prod Docker: nginx proxies /api → backend:8000.
-// VITE_API_BASE can override (e.g. for tunnels or staging).
-const API_ROOT =
-  import.meta.env.VITE_API_BASE ||
-  (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" ? "http://localhost:8000" : "");
-
-const BASE = `${API_ROOT}/api/v1`;
+// If VITE_API_BASE is set (e.g. "/api"), it already IS the base path — append only "/v1".
+// If not set, fall back to direct localhost:8000 (dev) or empty string (other).
+const _envBase = import.meta.env.VITE_API_BASE;
+const BASE = _envBase
+  ? `${_envBase}/v1`
+  : `${window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" ? "http://localhost:8000" : ""}/api/v1`;
 
 export const api = axios.create({ baseURL: BASE });
 
