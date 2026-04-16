@@ -131,14 +131,32 @@ export default function PDFViewerPanel({
 
   // ── Resolve PDF source: prop → API URL → sessionStorage ─────────────────
   if (!pdfUrl) {
-    if (source === "invoice" && statusData?.invoice_pdf_url) {
-      pdfUrl = statusData.invoice_pdf_url;
-    } else if (source === "bl" && statusData?.bl_pdf_url) {
-      pdfUrl = statusData.bl_pdf_url;
+    if (statusData?.document_id) {
+      pdfUrl = getPDF(statusData.document_id, source);
     }
-  }
-  if (!pdfUrl) {
-    pdfUrl = getPDF(runId, source);
+    if (!pdfUrl) {
+      pdfUrl = getPDF(runId, source);
+    }
+
+    if (!pdfUrl) {
+      if (source === "invoice" && statusData?.invoice_pdf_url) {
+        pdfUrl = statusData.invoice_pdf_url;
+      } else if (source === "bl" && statusData?.bl_pdf_url) {
+        pdfUrl = statusData.bl_pdf_url;
+      }
+      
+      // If we got a relative URL from the API, ensure it respects our base path
+      if (pdfUrl && pdfUrl.startsWith("/uploads/")) {
+        const _envBase = import.meta.env.VITE_API_BASE;
+        if (_envBase) {
+           pdfUrl = _envBase.replace(/\/api$/, "") + pdfUrl;
+        } else if (window.location.hostname !== "localhost" && window.location.hostname !== "127.0.0.1") {
+           // In production, root relative is fine if served by nginx
+        } else {
+           // In Dev, just let the Vite proxy handle it!
+        }
+      }
+    }
   }
 
   if (!pdfUrl) {

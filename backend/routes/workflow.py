@@ -379,8 +379,8 @@ async def get_run_status(run_id: str) -> StatusResponse:
         result=result,
         steps=steps,
         bboxes=bboxes,
-        invoice_pdf_url=f"http://localhost:8000/uploads/{wf.document_id}_invoice.pdf",
-        bl_pdf_url=f"http://localhost:8000/uploads/{wf.document_id}_bl.pdf"
+        invoice_pdf_url=f"/uploads/{wf.document_id}_invoice.pdf",
+        bl_pdf_url=f"/uploads/{wf.document_id}_bl.pdf"
     )
 
 
