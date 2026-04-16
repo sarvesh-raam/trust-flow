@@ -13,9 +13,6 @@
   <img src="https://img.shields.io/badge/Firebase-FFCA28?style=for-the-badge&logo=firebase&logoColor=black" alt="Firebase">
 </p>
 
-> HackStrom'26 · Track 3 · Autonomous Document Processing & Compliance Agent  
-> **Sarvesh Raam T K** × SRM Institute of Science and Technology
-
 ---
 
 ## 📖 Problem Statement
@@ -208,10 +205,10 @@ kubectl apply -f k8s/
 ---
 
 ## 👥 Contributors
-Developed with precision by the team for **HackStrom'26**:
+Autonomous AI Solution for Trade Compliance:
 
-- **Sarvesh Raam T K** ([github.com/sarvesh-raam](https://github.com/sarvesh-raam))
-- **Mugundha S** ([github.com/abinavmugundhan](https://github.com/abinavmugundhan))
-- **Mr G** ([github.com/Shiva085000](https://github.com/Shiva085000))
+- [github.com/sarvesh-raam](https://github.com/sarvesh-raam)
+- [github.com/abinavmugundhan](https://github.com/abinavmugundhan)
+- [github.com/Shiva085000](https://github.com/Shiva085000)
 
 ---
