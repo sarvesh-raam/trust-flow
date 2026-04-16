@@ -141,6 +141,14 @@ export default function PDFViewerPanel({
     pdfUrl = getPDF(runId, source);
   }
 
+  // Ensure /uploads/... URLs resolve against the backend (port 8000), not Vite (port 3000).
+  if (pdfUrl && pdfUrl.startsWith("/uploads/")) {
+    const backendBase = import.meta.env.VITE_API_BASE
+      ? import.meta.env.VITE_API_BASE.replace("/api/v1", "")
+      : "http://localhost:8000";
+    pdfUrl = `${backendBase}${pdfUrl}`;
+  }
+
   if (!pdfUrl) {
     return (
       <div style={{
