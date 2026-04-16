@@ -54,5 +54,10 @@ docker-compose up -d --build
 - **API Documentation**: `http://localhost:8000/docs`
 - **Observability Hub**: `http://localhost:3001` (Grafana)
 
+## Core Contributors
+
+| [<img src="https://github.com/abinavmugundhan.png?size=100" width="100px;"/><br /><sub><b>Abinav Mugundhan</b></sub>](https://github.com/abinavmugundhan) | [<img src="https://github.com/Shiva085000.png?size=100" width="100px;"/><br /><sub><b>Shiva</b></sub>](https://github.com/Shiva085000) |
+| :---: | :---: |
+
 ---
 *Maintained by the Trust Flow Engineering Team for Hackstrom '26.*
