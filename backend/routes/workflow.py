@@ -9,9 +9,9 @@ import structlog
 from fastapi import APIRouter, BackgroundTasks, HTTPException, status
 from pydantic import BaseModel, Field
 
-from db import UploadRunRow, engine
+from db import UploadRunRow
+from workflow_db import db as workflow_db_instance
 # from graph import GraphState, NodeInterrupt, document_graph  # Moved inside functions
-from sqlmodel import Session as DBSession
 from models import (
     CountryCode,
     InvoiceDocument,
@@ -286,7 +286,7 @@ async def create_workflow(
 
     # Resolve actual file paths from the DB row written by the upload route.
     run_id_str = str(body.document_id)
-    with DBSession(engine) as db_session:
+    with workflow_db_instance.session() as db_session:
         upload_row = db_session.get(UploadRunRow, run_id_str)
 
     if upload_row:
@@ -303,14 +303,26 @@ async def create_workflow(
             fallback_bl=bl_path,
         )
 
-    from tasks import run_compliance_pipeline
-
-    # Dispatch to Redis queue — worker picks it up atomically
-    task = run_compliance_pipeline.apply_async(
-        args=[workflow_id, invoice_path, bl_path, body.country.value],
-        task_id=workflow_id  # Idempotent — same run_id won't re-queue
-    )
-    log.info("workflow.queued", workflow_id=workflow_id, task_id=task.id)
+    # Try Celery/Redis first; fall back to FastAPI BackgroundTasks when Redis
+    # is not available (local dev / demo without docker-compose).
+    try:
+        from tasks import run_compliance_pipeline
+        task = run_compliance_pipeline.apply_async(
+            args=[workflow_id, invoice_path, bl_path, body.country.value],
+            task_id=workflow_id,
+        )
+        log.info("workflow.queued_celery", workflow_id=workflow_id, task_id=task.id)
+    except Exception as celery_err:
+        log.warning("workflow.celery_unavailable", error=str(celery_err), fallback="background_tasks")
+        background_tasks.add_task(
+            _run_graph,
+            workflow_id=workflow_id,
+            document_id=run_id_str,
+            country=body.country.value,
+            invoice_pdf_path=invoice_path,
+            bl_pdf_path=bl_path,
+        )
+        log.info("workflow.queued_background", workflow_id=workflow_id)
     # Return the full WorkflowResponse compatible object
     return WorkflowResponse(
         id=wf.id,
@@ -388,8 +400,8 @@ async def get_run_status(run_id: str) -> StatusResponse:
         result=result,
         steps=steps,
         bboxes=bboxes,
-        invoice_pdf_url=f"http://localhost:8000/uploads/{wf.document_id}_invoice.pdf",
-        bl_pdf_url=f"http://localhost:8000/uploads/{wf.document_id}_bl.pdf"
+        invoice_pdf_url=f"/uploads/{wf.document_id}_invoice.pdf",
+        bl_pdf_url=f"/uploads/{wf.document_id}_bl.pdf"
     )
 
 

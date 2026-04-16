@@ -7,9 +7,10 @@ from pathlib import Path
 import aiofiles
 import structlog
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from workflow_db import db
+from db import UploadRunRow, engine
 from models import (
     CountryCode,
     DocumentRecord,
@@ -77,7 +78,7 @@ async def upload_documents(
 
     # Persist paths so the workflow route can find them
     with db.session() as session:
-        from db import UploadRunRow
+
         row = UploadRunRow(
             run_id=run_id,
             invoice_path=str(inv_dest),
@@ -122,7 +123,7 @@ async def upload_documents(
     summary="Get upload record by run_id",
 )
 async def get_document(document_id: str) -> DocumentResponse:
-    with Session(engine) as session:
+    with db.session() as session:
         row = session.get(UploadRunRow, document_id)
     if not row:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Upload not found")
@@ -142,8 +143,6 @@ async def get_document(document_id: str) -> DocumentResponse:
 )
 async def list_documents() -> list[DocumentResponse]:
     with db.session() as session:
-        from db import UploadRunRow
-        from sqlmodel import select
         rows = session.exec(select(UploadRunRow)).all()
     return [
         DocumentResponse(

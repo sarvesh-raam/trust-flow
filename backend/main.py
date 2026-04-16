@@ -6,14 +6,19 @@ from __future__ import annotations
 from dotenv import load_dotenv
 load_dotenv()
 
+import os
+import logging
+
 import structlog
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from routes.upload import router as upload_router
 from routes.workflow import router as workflow_router
-from fastapi.staticfiles import StaticFiles
+from routes.auth_routes import router as auth_router
+from dependencies import get_current_user
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -26,9 +31,6 @@ structlog.configure(
         structlog.dev.ConsoleRenderer(),
     ]
 )
-
-import os
-import logging
 
 loki_url = os.getenv("LOKI_URL")
 if loki_url:
@@ -74,19 +76,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-import os
-from fastapi import Depends
-from dependencies import get_current_user
-from routes.auth_routes import router as auth_router
-
+# ---------------------------------------------------------------------------
+# Static files + startup DB init
+# ---------------------------------------------------------------------------
 uploads_dir = os.path.join(os.path.dirname(__file__), "uploads")
 os.makedirs(uploads_dir, exist_ok=True)
 os.makedirs("data", exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
 
-# ---------------------------------------------------------------------------
-# Routers
-# ---------------------------------------------------------------------------
 from workflow_db import db as workflow_db_instance
 from sqlmodel import SQLModel
 try:
@@ -96,6 +93,9 @@ try:
 except Exception as e:
     print(f"[DB] Fatal error during startup table creation: {e}")
 
+# ---------------------------------------------------------------------------
+# Routers
+# ---------------------------------------------------------------------------
 app.include_router(auth_router)
 app.include_router(upload_router, prefix="/api/v1/upload", tags=["upload"], dependencies=[Depends(get_current_user)])
 app.include_router(workflow_router, prefix="/api/v1/workflow", tags=["workflow"], dependencies=[Depends(get_current_user)])
