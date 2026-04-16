@@ -1,0 +1,44 @@
+# United States — Document Validation Rules
+# Applied during the `validate` node in the LangGraph pipeline.
+
+jurisdiction: US
+version: "1.0.0"
+
+required_fields:
+  - ssn_or_ein          # Social Security Number or Employer Identification Number
+  - legal_name
+  - address
+  - date_of_birth
+  - document_type
+
+field_formats:
+  ssn_or_ein:
+    pattern: "^(\\d{3}-\\d{2}-\\d{4}|\\d{2}-\\d{7})$"
+    description: "SSN (XXX-XX-XXXX) or EIN (XX-XXXXXXX)"
+  date_of_birth:
+    pattern: "^\\d{4}-\\d{2}-\\d{2}$"
+    format: "YYYY-MM-DD"
+
+age_requirements:
+  minimum_age: 18
+
+document_types:
+  accepted:
+    - passport
+    - drivers_license
+    - state_id
+    - military_id
+
+address_rules:
+  require_state: true
+  require_zip: true
+  zip_pattern: "^\\d{5}(-\\d{4})?$"
+
+compliance:
+  kyc_required: true
+  aml_check: true
+  ofac_screening: true
+
+retention_policy:
+  years: 7
+  regulation: "BSA/AML"
