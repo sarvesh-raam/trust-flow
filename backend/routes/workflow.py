@@ -9,9 +9,10 @@ import structlog
 from fastapi import APIRouter, BackgroundTasks, HTTPException, status
 from pydantic import BaseModel, Field
 
-from db import UploadRunRow, engine
+from db import UploadRunRow
+from workflow_db import db as workflow_db_instance
 from graph import GraphState, NodeInterrupt, document_graph
-from sqlmodel import Session as DBSession
+# from graph import GraphState, NodeInterrupt, document_graph  # Moved inside functions
 from models import (
     CountryCode,
     InvoiceDocument,
@@ -180,6 +181,7 @@ def _state_get(state: Any, key: str, default: Any = None) -> Any:
 def _handle_blocked(wf: WorkflowRecord, workflow_id: str, msg: str, config: dict) -> None:
     """Shared logic for setting wf to BLOCKED after a NodeInterrupt."""
     wf.status = WorkflowStatus.BLOCKED
+    from graph import document_graph
     saved_state = document_graph.get_state(config)
     issues: list[dict] = []
     if saved_state and getattr(saved_state, "values", None):
@@ -199,9 +201,18 @@ async def _run_graph(
     bl_pdf_path: str,
 ) -> None:
     """Background task: run the LangGraph pipeline and update workflow state."""
-    wf = _workflows[workflow_id]
+
+    # Guard: backend may have restarted, wiping the in-memory dict.
+    wf = _workflows.get(workflow_id)
+    if not wf:
+        log.error("workflow.run_graph.missing", workflow_id=workflow_id)
+        return
+
+    # Set RUNNING immediately so the UI reflects progress.
     wf.status = WorkflowStatus.RUNNING
     wf.updated_at = datetime.utcnow()
+    log.info("workflow.run_graph.start", workflow_id=workflow_id,
+             invoice=invoice_pdf_path, bl=bl_pdf_path)
 
     initial_state = GraphState(
         document_id=document_id,
@@ -265,7 +276,6 @@ async def _run_graph(
 
 @router.post(
     "/",
-    response_model=WorkflowResponse,
     status_code=status.HTTP_202_ACCEPTED,
     summary="Start a processing workflow for a document pair",
 )
@@ -285,7 +295,7 @@ async def create_workflow(
 
     # Resolve actual file paths from the DB row written by the upload route.
     run_id_str = str(body.document_id)
-    with DBSession(engine) as db_session:
+    with workflow_db_instance.session() as db_session:
         upload_row = db_session.get(UploadRunRow, run_id_str)
 
     if upload_row:
@@ -305,13 +315,13 @@ async def create_workflow(
     background_tasks.add_task(
         _run_graph,
         workflow_id=workflow_id,
-        document_id=str(body.document_id),
+        document_id=run_id_str,
         country=body.country.value,
         invoice_pdf_path=invoice_path,
         bl_pdf_path=bl_path,
     )
 
-    log.info("workflow.queued", workflow_id=workflow_id, document_id=str(body.document_id))
+    log.info("workflow.queued", workflow_id=workflow_id, document_id=run_id_str)
     return WorkflowResponse(**wf.model_dump())
 
 
@@ -424,6 +434,7 @@ async def resume_workflow(
     config = {"configurable": {"thread_id": run_id}}
     
     # Update state synchronously here
+    from graph import document_graph
     current_state = document_graph.get_state(config)
     if not getattr(current_state, "values", None):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Graph state not found")
@@ -482,6 +493,7 @@ async def resume_workflow(
 
 
 async def _resume_graph(workflow_id: str) -> None:
+    from graph import document_graph, NodeInterrupt
     wf = _workflows[workflow_id]
     config = {"configurable": {"thread_id": workflow_id}}
     try:

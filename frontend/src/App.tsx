@@ -155,6 +155,8 @@ function NavTab({
 }
 
 
+
+
 // ── User avatar + sign-out ────────────────────────────────────────────────────
 function UserMenu() {
   const { user } = useAuth();
@@ -290,7 +292,7 @@ export default function App() {
                 whiteSpace: "nowrap",
               }}
             >
-              ◈ CUSTOMS DECL
+              CUSTOMS DECLARATION
             </span>
             {/* Pulsing online indicator */}
             <span style={{ position: "relative", display: "inline-flex", height: "8px", width: "8px" }}>
@@ -335,7 +337,7 @@ export default function App() {
                 textTransform: "uppercase",
               }}
             >
-              HACKSTROM&apos;26&nbsp;&nbsp;|&nbsp;&nbsp;TRACK 3&nbsp;&nbsp;|&nbsp;&nbsp;AUTONOMOUS COMPLIANCE AGENT
+              HACKSTROM'26 | TRACK 3 | AUTONOMOUS COMPLIANCE AGENT
             </span>
           </div>
 

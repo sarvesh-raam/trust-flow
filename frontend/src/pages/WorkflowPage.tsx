@@ -4,11 +4,12 @@ import { useDemoMode } from "@/demo/DemoContext";
 
 // ── Status badge helper ────────────────────────────────────────────────────────
 const STATUS_CONFIG: Record<WorkflowStatus, { label: string; cls: string }> = {
-  completed: { label: "PASS",    cls: "badge-pass"  },
-  blocked:   { label: "BLOCK",   cls: "badge-block" },
-  failed:    { label: "FAIL",    cls: "badge-block" },
-  running:   { label: "RUNNING", cls: "badge-blue"  },
-  queued:    { label: "QUEUED",  cls: "badge-muted" },
+  completed:   { label: "PASS",    cls: "badge-pass"  },
+  blocked:     { label: "BLOCK",   cls: "badge-block" },
+  failed:      { label: "FAIL",    cls: "badge-block" },
+  running:     { label: "RUNNING", cls: "badge-blue"  },
+  queued:      { label: "QUEUED",  cls: "badge-muted" },
+  interrupted: { label: "PAUSED",  cls: "badge-warn"  },
 };
 
 function StatusBadge({ status }: { status: WorkflowStatus }) {
@@ -278,7 +279,7 @@ export default function WorkflowPage({ onViewDeclaration }: WorkflowPageProps) {
               </tr>
             </thead>
             <tbody>
-              {workflows.map((wf) => (
+              {workflows.map((wf: WorkflowResponse) => (
                 <tr
                   key={wf.id}
                   style={{ transition: "background 0.12s" }}

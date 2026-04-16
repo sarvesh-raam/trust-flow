@@ -1,0 +1,59 @@
+# United Arab Emirates — Document Validation Rules
+# Applied during the `validate` node in the LangGraph pipeline.
+
+jurisdiction: UAE
+version: "1.0.0"
+
+required_fields:
+  - emirates_id         # 15-digit Emirates ID
+  - legal_name_en       # Name in English
+  - legal_name_ar       # Name in Arabic (optional but preferred)
+  - nationality
+  - date_of_birth
+  - document_type
+  - visa_status         # Resident / Citizen / Visitor
+
+field_formats:
+  emirates_id:
+    pattern: "^784-\\d{4}-\\d{7}-\\d{1}$"
+    description: "784-YYYY-XXXXXXX-C"
+  date_of_birth:
+    pattern: "^\\d{4}-\\d{2}-\\d{2}$"
+    format: "YYYY-MM-DD"
+
+age_requirements:
+  minimum_age: 21        # UAE contractual capacity
+
+document_types:
+  accepted:
+    - passport
+    - emirates_id_card
+    - gcc_id             # GCC nationals
+    - residence_visa
+
+visa_statuses:
+  - citizen
+  - gcc_national
+  - resident
+  - visitor
+
+address_rules:
+  require_emirate: true
+  emirates:
+    - Abu Dhabi
+    - Dubai
+    - Sharjah
+    - Ajman
+    - Umm Al Quwain
+    - Ras Al Khaimah
+    - Fujairah
+
+compliance:
+  kyc_required: true
+  aml_check: true
+  cbuae_screening: true  # Central Bank UAE screening
+  fatf_compliant: true
+
+retention_policy:
+  years: 5
+  regulation: "CBUAE AML/CFT"

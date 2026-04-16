@@ -1,0 +1,54 @@
+{
+  "title": "HackStrom Track 3 — Compliance Pipeline",
+  "uid": "hackstrom-main",
+  "timezone": "browser",
+  "refresh": "5s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "Pipeline Runs — Live Log Stream",
+      "type": "logs",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 0},
+      "datasource": {"type": "loki", "uid": "loki"},
+      "targets": [{
+        "expr": "{service=\"hackstrom-backend\"}",
+        "refId": "A"
+      }]
+    },
+    {
+      "id": 2,
+      "title": "Worker Task Events",
+      "type": "logs",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 8},
+      "datasource": {"type": "loki", "uid": "loki"},
+      "targets": [{
+        "expr": "{service=\"hackstrom-backend\"} |= \"task\"",
+        "refId": "A"
+      }]
+    },
+    {
+      "id": 3,
+      "title": "BLOCK Events",
+      "type": "logs",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "datasource": {"type": "loki", "uid": "loki"},
+      "targets": [{
+        "expr": "{service=\"hackstrom-backend\"} |= \"BLOCK\"",
+        "refId": "A"
+      }]
+    },
+    {
+      "id": 4,
+      "title": "PASS / WARN Events",
+      "type": "logs",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+      "datasource": {"type": "loki", "uid": "loki"},
+      "targets": [{
+        "expr": "{service=\"hackstrom-backend\"} |= \"PASS\" or {service=\"hackstrom-backend\"} |= \"WARN\"",
+        "refId": "A"
+      }]
+    }
+  ],
+  "schemaVersion": 38,
+  "version": 1
+}
