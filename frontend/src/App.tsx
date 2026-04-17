@@ -4,6 +4,7 @@ import UploadPage from "@/pages/UploadPage";
 import WorkflowPage from "@/pages/WorkflowPage";
 import DeclarationPage from "@/pages/DeclarationPage";
 import LoginPage from "@/pages/LoginPage";
+import PipelineGraphPage from "@/pages/PipelineGraphPage";
 import { useAuth } from "@/contexts/AuthContext";
 import { useDemoMode } from "@/demo/DemoContext";
 import { signOutUser } from "@/lib/firebase";
@@ -88,7 +89,7 @@ class ErrorBoundary extends Component<
   }
 }
 
-type Tab = "upload" | "workflows" | "declaration";
+type Tab = "upload" | "workflows" | "declaration" | "graph";
 
 // ── Live clock ────────────────────────────────────────────────────────────────
 function LiveClock() {
@@ -369,6 +370,11 @@ export default function App() {
               active={tab === "workflows" || tab === "declaration"}
               onClick={() => switchTab("workflows")}
             />
+            <NavTab
+              label="GRAPH"
+              active={tab === "graph"}
+              onClick={() => switchTab("graph")}
+            />
 
             {/* Clock */}
             <div
@@ -426,6 +432,9 @@ export default function App() {
         )}
         {tab === "declaration" && selectedRunId && (
           <DeclarationPage runId={selectedRunId} onBack={handleBack} />
+        )}
+        {tab === "graph" && (
+          <PipelineGraphPage />
         )}
       </main>
 

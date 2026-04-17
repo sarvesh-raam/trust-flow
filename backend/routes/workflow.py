@@ -17,7 +17,7 @@ from metrics import (
 )
 from pydantic import BaseModel, Field
 
-from models import (
+from graph import (
     GraphState,
     NodeInterrupt,
     country_validate,

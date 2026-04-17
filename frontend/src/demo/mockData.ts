@@ -64,17 +64,17 @@ export const DEMO_WORKFLOW = {
   ],
 
   agent_trace: [
-    { node: "ingest",                 status: "done",    latency_ms: 12   },
-    { node: "preprocess",             status: "done",    latency_ms: 234  },
-    { node: "ocr_extract",            status: "done",    latency_ms: 1847 },
-    { node: "field_extract",          status: "done",    latency_ms: 3201 },
-    { node: "reconcile",              status: "done",    latency_ms: 45   },
-    { node: "hs_rag",                 status: "done",    latency_ms: 892  },
-    { node: "deterministic_validate", status: "done",    latency_ms: 18   },
-    { node: "interrupt_node",         status: "blocked", latency_ms: null },
-    { node: "country_validate",       status: "pending", latency_ms: null },
-    { node: "declaration_generate",   status: "pending", latency_ms: null },
-    { node: "audit_trace",            status: "pending", latency_ms: null },
+    { node: "ingest",                 status: "done",    latency_ms: 12,   reasoning_note: "✅ 2 documents received — invoice PDF (318KB) and bill of lading PDF (245KB)." },
+    { node: "preprocess",             status: "done",    latency_ms: 234,  reasoning_note: "✅ PDFs flattened and de-skewed; 4 pages total queued for OCR extraction." },
+    { node: "ocr_extract",            status: "done",    latency_ms: 1847, reasoning_note: "✅ OCR confidence 0.91 — all fields extracted cleanly; no vision-fallback needed." },
+    { node: "field_extract",          status: "done",    latency_ms: 3201, reasoning_note: "✅ LLM parsed 14 structured fields from invoice and 9 from B/L (Groq llama-3.3-70b)." },
+    { node: "reconcile",              status: "done",    latency_ms: 45,   reasoning_note: "⚠️ Weight delta 40kg (4.9%) — exceeds 5% tolerance threshold → BLOCK raised." },
+    { node: "hs_rag",                 status: "done",    latency_ms: 892,  reasoning_note: "✅ Classified 2 line items — HS 8471.30.0000 (laptops) and HS 8504.40.1500 (adapters). 0 flagged." },
+    { node: "deterministic_validate", status: "done",    latency_ms: 18,   reasoning_note: "🚫 1 blocking issue: gross_weight_kg mismatch (Invoice 820kg vs B/L 860kg). 0 advisory." },
+    { node: "interrupt_node",         status: "blocked", latency_ms: null, reasoning_note: "🛑 HITL pause: 1 blocking issue requires human review before clearance can proceed." },
+    { node: "country_validate",       status: "pending", latency_ms: null, reasoning_note: null },
+    { node: "declaration_generate",   status: "pending", latency_ms: null, reasoning_note: null },
+    { node: "audit_trace",            status: "pending", latency_ms: null, reasoning_note: null },
   ],
 } as const;
 
@@ -106,7 +106,7 @@ function buildStepTimestamps(
       started_at:   started,
       completed_at: completed,
       error:        null,
-      output:       latMs ? { latency_ms: latMs } : {},
+      output:       { latency_ms: latMs || undefined, reasoning_note: t.reasoning_note ?? null },
     } satisfies WorkflowStep;
   });
 }

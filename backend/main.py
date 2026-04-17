@@ -19,16 +19,29 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from routes.upload import router as upload_router
 from routes.workflow import router as workflow_router
 from routes.auth_routes import router as auth_router
+from routes.logs import router as logs_router, capture_log_event
 from dependencies import get_current_user
 
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
+def _sse_capture(_logger, _method, event_dict):
+    """Structlog processor: fan out every log event to SSE subscribers."""
+    capture_log_event({
+        "ts": event_dict.get("timestamp", ""),
+        "level": event_dict.get("level", "info"),
+        "event": str(event_dict.get("event", "")),
+        **{k: str(v) for k, v in event_dict.items()
+           if k not in ("timestamp", "level", "event", "_record", "_logger")},
+    })
+    return event_dict
+
 structlog.configure(
     processors=[
         structlog.contextvars.merge_contextvars,
         structlog.processors.add_log_level,
         structlog.processors.TimeStamper(fmt="iso"),
+        _sse_capture,
         structlog.dev.ConsoleRenderer(),
     ]
 )
@@ -105,6 +118,7 @@ app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
 app.include_router(auth_router)
 app.include_router(upload_router, prefix="/api/v1/upload", tags=["upload"], dependencies=[Depends(get_current_user)])
 app.include_router(workflow_router, prefix="/api/v1/workflow", tags=["workflow"], dependencies=[Depends(get_current_user)])
+app.include_router(logs_router, prefix="/api/v1/logs", tags=["logs"])
 
 
 # ---------------------------------------------------------------------------

@@ -89,6 +89,44 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+// Auto-refresh on 401 — use stored refresh_token to get a new access_token
+let _refreshing: Promise<string | null> | null = null;
+
+api.interceptors.response.use(
+  (res) => res,
+  async (error) => {
+    const original = error.config;
+    if (error.response?.status !== 401 || original._retried) {
+      return Promise.reject(error);
+    }
+    original._retried = true;
+
+    if (!_refreshing) {
+      _refreshing = (async () => {
+        const refreshToken = localStorage.getItem("refresh_token");
+        if (!refreshToken) return null;
+        try {
+          const { data } = await api.post("/auth/refresh", { refresh_token: refreshToken });
+          localStorage.setItem("access_token", data.access_token);
+          return data.access_token as string;
+        } catch {
+          localStorage.removeItem("access_token");
+          localStorage.removeItem("refresh_token");
+          localStorage.removeItem("guest_session");
+          return null;
+        } finally {
+          _refreshing = null;
+        }
+      })();
+    }
+
+    const newToken = await _refreshing;
+    if (!newToken) return Promise.reject(error);
+    original.headers.Authorization = `Bearer ${newToken}`;
+    return api(original);
+  },
+);
+
 export const uploadDocument = async (invoice: File, bl: File, country: CountryCode) => {
   const formData = new FormData();
   formData.append("invoice_pdf", invoice);
@@ -131,6 +169,7 @@ export const chatWithWorkflow = async (
 export const createGuestSession = async () => {
   const { data } = await api.post("/auth/google", { firebase_token: "local-guest" });
   localStorage.setItem("access_token", data.access_token);
+  localStorage.setItem("refresh_token", data.refresh_token);
   localStorage.setItem(
     "guest_session",
     JSON.stringify({

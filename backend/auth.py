@@ -5,7 +5,7 @@ from typing import Optional
 
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", "hackstrom-secret-change-in-prod")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+ACCESS_TOKEN_EXPIRE_MINUTES = 480  # 8 hours — covers full hackathon demo day
 REFRESH_TOKEN_EXPIRE_DAYS = 7
 
 import hmac

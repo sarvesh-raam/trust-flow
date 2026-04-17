@@ -38,11 +38,6 @@ class Settings:
         default_factory=lambda: os.getenv("VLLM_MODEL", "Qwen/Qwen2.5-7B-Instruct")
     )
 
-    # ── Database (SQLite — kept while Firestore runs in parallel) ────────────
-    DATABASE_URL: str = field(
-        default_factory=lambda: os.getenv("DATABASE_URL", "sqlite:///./data/hackstrom.db")
-    )
-
     # ── Cache / queue ─────────────────────────────────────────────────────────
     REDIS_URL: str = field(
         default_factory=lambda: os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")

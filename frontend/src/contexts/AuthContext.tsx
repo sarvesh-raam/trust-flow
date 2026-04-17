@@ -54,7 +54,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return () => undefined;
     }
 
-    const unsubscribe = onAuthStateChanged(auth, async (u) => {
+    const unsubscribe = onAuthStateChanged(auth!, async (u) => {
       if (u) {
         // Exchange Firebase ID token for backend JWT (non-blocking — failure keeps user logged in)
         await exchangeFirebaseToken(u);
@@ -68,10 +68,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return unsubscribe;
   }, []);
 
-  // Auto-refresh backend JWT when Firebase token renews (every ~55 min)
+  // Auto-refresh backend JWT — Firebase users every 55 min, guest sessions every 7 hours
   useEffect(() => {
     const isDemoMode = new URLSearchParams(window.location.search).get("demo") === "true";
-    if (!user || isDemoMode || Boolean(localStorage.getItem("guest_session"))) return;
+    if (!user || isDemoMode) return;
+
+    const isGuest = Boolean(localStorage.getItem("guest_session"));
+
+    const refreshGuest = async () => {
+      const refreshToken = localStorage.getItem("refresh_token");
+      if (!refreshToken) return;
+      try {
+        const { data } = await api.post("/auth/refresh", { refresh_token: refreshToken });
+        localStorage.setItem("access_token", data.access_token);
+      } catch {
+        console.warn("[AuthContext] Guest token refresh failed");
+      }
+    };
+
+    if (isGuest) {
+      const interval = setInterval(refreshGuest, 7 * 60 * 60 * 1000); // 7 h
+      return () => clearInterval(interval);
+    }
+
     const interval = setInterval(async () => {
       await exchangeFirebaseToken(user);
     }, 55 * 60 * 1000);

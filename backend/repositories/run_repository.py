@@ -101,6 +101,9 @@ class RunRepository:
 
         Mirrors the INSERT that upload.py does via SQLModel.
         """
+        if firebase_client.db is None:
+            log.info("run_repository.create skipped — Firebase not configured run_id=%s", run_id)
+            return
         db = _get_db()
         doc: dict[str, Any] = {
             "run_id": run_id,
@@ -143,6 +146,8 @@ class RunRepository:
         ``result`` may contain any subset of: declaration, summary, error.
         Mirrors update_run_status() in workflow_db.py.
         """
+        if firebase_client.db is None:
+            return
         db = _get_db()
         updates: dict[str, Any] = {
             "status": status,
@@ -209,8 +214,10 @@ class RunRepository:
         """Fetch a single run document by run_id.
 
         Returns a plain dict with the same field names as UploadRunRow,
-        or None when the document does not exist.
+        or None when the document does not exist or Firebase is not configured.
         """
+        if firebase_client.db is None:
+            return None
         db = _get_db()
         snap = await _blocking(
             db.collection(self.COLLECTION).document(run_id).get
@@ -221,6 +228,8 @@ class RunRepository:
 
     async def list_all(self) -> list[dict[str, Any]]:
         """Return all run documents ordered by created_at descending."""
+        if firebase_client.db is None:
+            return []
         db = _get_db()
 
         def _fetch() -> list[dict[str, Any]]:

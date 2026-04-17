@@ -1,5 +1,5 @@
-import { initializeApp } from "firebase/app";
-import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut, type User } from "firebase/auth";
+import { initializeApp, type FirebaseApp } from "firebase/app";
+import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut, type Auth, type User } from "firebase/auth";
 
 const firebaseConfig = {
   apiKey:            import.meta.env.VITE_FIREBASE_API_KEY,
@@ -12,16 +12,26 @@ const firebaseConfig = {
 
 export const isFirebaseConfigured = Object.values(firebaseConfig).every(Boolean);
 
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const provider = new GoogleAuthProvider();
+let app: FirebaseApp | null = null;
+let auth: Auth | null = null;
+let provider: GoogleAuthProvider | null = null;
 
-export const signInWithGoogle = () => signInWithPopup(auth, provider);
+if (isFirebaseConfigured) {
+  app = initializeApp(firebaseConfig);
+  auth = getAuth(app);
+  provider = new GoogleAuthProvider();
+}
+
+export const signInWithGoogle = () => {
+  if (!auth || !provider) throw new Error("Firebase is not configured.");
+  return signInWithPopup(auth, provider);
+};
+
 export const signOutUser = async () => {
   localStorage.removeItem("guest_session");
   localStorage.removeItem("access_token");
   try {
-    await signOut(auth);
+    if (auth) await signOut(auth);
   } catch {
     // Local guest sessions do not have a Firebase user to sign out.
   }
