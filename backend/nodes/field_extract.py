@@ -27,6 +27,7 @@ log = structlog.get_logger(__name__)
 # ---------------------------------------------------------------------------
 
 GROQ_MODEL_DEFAULT  = "openai/gpt-oss-120b"
+GROQ_FALLBACK_MODEL_DEFAULT = "openai/gpt-oss-20b"
 VLLM_MODEL_DEFAULT  = "Qwen/Qwen2.5-7B-Instruct"
 VLLM_BASE_URL_DEFAULT = "http://localhost:8001/v1"
 
@@ -66,6 +67,39 @@ def _active_model() -> str:
     if os.getenv("GROQ_API_KEY", "").strip():
         return os.getenv("GROQ_MODEL", GROQ_MODEL_DEFAULT)
     return os.getenv("VLLM_MODEL", VLLM_MODEL_DEFAULT)
+
+
+def _fallback_model() -> str | None:
+    """Groq model to retry with when the main one is rate limited.
+
+    Groq's free tier limits tokens per model per day, so a smaller model has
+    its own budget.  Set GROQ_FALLBACK_MODEL to "" to disable.
+    """
+    if not os.getenv("GROQ_API_KEY", "").strip():
+        return None
+    return os.getenv("GROQ_FALLBACK_MODEL", GROQ_FALLBACK_MODEL_DEFAULT).strip() or None
+
+
+def is_rate_limited(exc: BaseException) -> bool:
+    """True for an HTTP 429 from the LLM provider (also when Instructor wraps it)."""
+    text = str(exc)
+    return "Error code: 429" in text or "rate_limit_exceeded" in text
+
+
+def structured_completion(client: Any, model: str, **kwargs: Any) -> Any:
+    """client.chat.completions.create, retried once on the fallback model if rate limited.
+
+    Every LLM call in the app goes through here (field extraction, HS code
+    selection, declaration chat).
+    """
+    try:
+        return client.chat.completions.create(model=model, **kwargs)
+    except Exception as exc:
+        fallback = _fallback_model()
+        if not fallback or fallback == model or not is_rate_limited(exc):
+            raise
+        log.warning("llm.rate_limited_fallback", model=model, fallback=fallback)
+        return client.chat.completions.create(model=fallback, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -167,8 +201,9 @@ def _extract_invoice(client: Any, model: str, inv_text: str, tables: list[Any] |
         text_chars=len(inv_text),
     )
 
-    invoice: InvoiceDocument = client.chat.completions.create(
-        model=model,
+    invoice: InvoiceDocument = structured_completion(
+        client,
+        model,
         response_model=InvoiceDocument,
         messages=[
             {
@@ -198,8 +233,9 @@ def _extract_bl(client: Any, model: str, bl_text: str, tables: list[Any] | None,
         text_chars=len(bl_text),
     )
 
-    bill_of_lading: BillOfLading = client.chat.completions.create(
-        model=model,
+    bill_of_lading: BillOfLading = structured_completion(
+        client,
+        model,
         response_model=BillOfLading,
         messages=[
             {

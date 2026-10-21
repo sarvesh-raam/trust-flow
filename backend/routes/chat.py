@@ -21,7 +21,7 @@ from sqlmodel import Session
 from db import WorkflowRunRow, engine
 from dependencies import get_current_user
 from models import BillOfLading, ComplianceResult, InvoiceDocument, WorkflowStatus
-from nodes.field_extract import _active_model, get_client
+from nodes.field_extract import _active_model, get_client, is_rate_limited, structured_completion
 from routes.workflow import (
     _EDITABLE_FIELDS,
     _apply_corrections,
@@ -29,6 +29,7 @@ from routes.workflow import (
     _get_owned,
     apply_corrections_and_rerun,
     graph_values,
+    rate_limit_message,
 )
 
 log = structlog.get_logger(__name__)
@@ -165,8 +166,8 @@ def plan_chat_reply(context: dict[str, Any], editable: list[str], history: list[
     }]
     messages += [{"role": m.role, "content": m.content} for m in history[-CONTEXT_TURNS:]]
     messages.append({"role": "user", "content": message})
-    return get_client().chat.completions.create(
-        model=_active_model(), response_model=ChatPlan, messages=messages, max_retries=2,
+    return structured_completion(
+        get_client(), _active_model(), response_model=ChatPlan, messages=messages, max_retries=2,
     )
 
 
@@ -225,6 +226,8 @@ async def send_chat(run_id: str, body: ChatRequest, user_id: str = Depends(get_c
         )
     except Exception as exc:
         log.warning("chat.llm_failed", workflow_id=run_id, user_id=user_id, error=str(exc)[:300])
+        if is_rate_limited(exc):
+            raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=rate_limit_message(str(exc)))
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="The assistant is unavailable right now — please try again")
 
     proposals, rejected = _valid_changes(plan.proposed_changes, invoice, bl)

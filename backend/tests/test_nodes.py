@@ -116,3 +116,61 @@ def test_missing_jwt_secret_gets_a_random_key(monkeypatch):
 def test_strong_jwt_secret_is_used_as_is(monkeypatch):
     monkeypatch.setenv("JWT_SECRET_KEY", "k" * 40)
     assert auth._load_secret() == "k" * 40
+
+
+# ── LLM rate-limit fallback ──────────────────────────────────────────────────
+
+from nodes import field_extract  # noqa: E402
+from routes.workflow import rate_limit_message  # noqa: E402
+
+_RATE_LIMIT_ERROR = (
+    "Error code: 429 - {'error': {'message': 'Rate limit reached for model `openai/gpt-oss-120b` "
+    "... Please try again in 4m18.336s.', 'code': 'rate_limit_exceeded'}}"
+)
+
+
+class _FakeClient:
+    """Records the model of each call; fails for models in `limited`."""
+
+    def __init__(self, limited):
+        self.limited, self.models = limited, []
+        self.chat = self.completions = self
+
+    def create(self, model, **kwargs):
+        self.models.append(model)
+        if model in self.limited:
+            raise RuntimeError(_RATE_LIMIT_ERROR)
+        return f"answer from {model}"
+
+
+def test_rate_limited_model_falls_back_to_smaller_model(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "test")
+    monkeypatch.delenv("GROQ_FALLBACK_MODEL", raising=False)
+    client = _FakeClient(limited={"openai/gpt-oss-120b"})
+    assert field_extract.structured_completion(client, "openai/gpt-oss-120b") == "answer from openai/gpt-oss-20b"
+    assert client.models == ["openai/gpt-oss-120b", "openai/gpt-oss-20b"]
+
+
+def test_other_errors_and_disabled_fallback_are_not_retried(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "test")
+
+    class Broken(_FakeClient):
+        def create(self, model, **kwargs):
+            self.models.append(model)
+            raise ValueError("schema validation failed")
+
+    client = Broken(limited=set())
+    with pytest.raises(ValueError):
+        field_extract.structured_completion(client, "openai/gpt-oss-120b")
+    assert client.models == ["openai/gpt-oss-120b"]
+
+    monkeypatch.setenv("GROQ_FALLBACK_MODEL", "")
+    client = _FakeClient(limited={"openai/gpt-oss-120b"})
+    with pytest.raises(RuntimeError):
+        field_extract.structured_completion(client, "openai/gpt-oss-120b")
+
+
+def test_rate_limit_error_is_explained_in_plain_language():
+    msg = _readable_error(RuntimeError(_RATE_LIMIT_ERROR))
+    assert "usage limit" in msg and "4m18s" in msg and "GROQ_MODEL" in msg
+    assert rate_limit_message("no hint") .endswith("in backend/.env.")

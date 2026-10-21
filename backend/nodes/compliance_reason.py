@@ -17,7 +17,7 @@ import structlog
 from pydantic import BaseModel, Field
 
 from models import WorkflowState
-from nodes.field_extract import _active_model, get_client
+from nodes.field_extract import _active_model, get_client, structured_completion
 
 log = structlog.get_logger(__name__)
 
@@ -116,8 +116,9 @@ def compliance_reason_node(state: WorkflowState) -> WorkflowState:
 
     # ── LLM call ─────────────────────────────────────────────────────────────
     client = get_client()
-    result: HSSelectionList = client.chat.completions.create(
-        model=_active_model(),
+    result: HSSelectionList = structured_completion(
+        client,
+        _active_model(),
         response_model=HSSelectionList,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},

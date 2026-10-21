@@ -14,6 +14,7 @@ from sqlmodel import Session as DBSession, select
 
 from db import UploadRunRow, WorkflowRunRow, engine
 from dependencies import get_current_user
+from nodes.field_extract import is_rate_limited
 from metrics import (
     COMPLIANCE_STATUS_TOTAL,
     HITL_INTERRUPTS_TOTAL,
@@ -344,8 +345,24 @@ def _readable_error(exc: Exception) -> str:
     exception is useful to show in the UI.
     """
     text = str(exc)
+    if is_rate_limited(exc):
+        return rate_limit_message(text)
     match = _LAST_EXCEPTION_RE.search(text)
     return (match.group(1) if match else text).strip()[:1000]
+
+
+_RETRY_IN_RE = re.compile(r"try again in ([0-9hms.]+)")
+
+
+def rate_limit_message(provider_error: str) -> str:
+    """Plain-language text for an LLM provider rate limit (HTTP 429)."""
+    wait = _RETRY_IN_RE.search(provider_error)
+    when = f" Try again in about {wait.group(1).split('.')[0]}s." if wait else " Try again later."
+    return (
+        "The AI service's usage limit was reached (Groq free tier: tokens per day, per model)."
+        + when
+        + " To keep working now, set GROQ_MODEL to another model (e.g. openai/gpt-oss-20b) in backend/.env."
+    )
 
 
 async def _drive_graph(workflow_id: str, graph_input: GraphState | None) -> None:
