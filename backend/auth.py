@@ -47,7 +47,7 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 30
 REFRESH_TOKEN_EXPIRE_DAYS = 7
 
 # Firebase project whose ID tokens we accept (must match the frontend config).
-FIREBASE_PROJECT_ID = os.getenv("FIREBASE_PROJECT_ID", "trustflow-45bec")
+FIREBASE_PROJECT_ID = os.getenv("FIREBASE_PROJECT_ID", "trustflow-1b008")
 
 
 def _hash_pii(value: str) -> str:

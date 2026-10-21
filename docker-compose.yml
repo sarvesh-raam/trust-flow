@@ -12,7 +12,7 @@ services:
       - UPLOAD_DIR=/app/uploads
       - COUNTRY_RULES_DIR=/app/country_rules
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:?set JWT_SECRET_KEY in .env}
-      - FIREBASE_PROJECT_ID=${FIREBASE_PROJECT_ID:-trustflow-45bec}
+      - FIREBASE_PROJECT_ID=${FIREBASE_PROJECT_ID:-trustflow-1b008}
       - CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
     volumes:
       - uploads_data:/app/uploads

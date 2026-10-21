@@ -10,7 +10,7 @@ What runs on the server (`docker compose`):
 - **caddy** — web server that gets a free HTTPS certificate automatically
 
 You need: an Oracle Cloud account, your Groq API key, and access to the
-Firebase project (`trustflow-45bec`) to allow the new address for Google sign-in.
+Firebase project (`trustflow-1b008`) to allow the new address for Google sign-in.
 
 ---
 
@@ -108,7 +108,7 @@ and press **Ctrl+C** to stop watching. It's ready when you see
 ## 7. Allow the address for Google sign-in
 
 In the [Firebase console](https://console.firebase.google.com) → project
-**trustflow-45bec** → **Authentication → Settings → Authorized domains → Add domain**,
+**trustflow-1b008** → **Authentication → Settings → Authorized domains → Add domain**,
 add your address (e.g. `129-154-10-20.sslip.io`).
 
 ## 8. Open the app
