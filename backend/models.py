@@ -329,6 +329,16 @@ class ResumeRequest(BaseModel):
     conflicts with the other document blocks the run again.
     """
 
+    corrections: dict[str, str | float | None] = Field(
+        default_factory=dict,
+        description=(
+            "Corrected values keyed by the issue's field path, e.g. "
+            "{'invoice.date': '2024-03-15', 'bill_of_lading.gross_weight_kg': 850, "
+            "'line_items.0.hs_code': '8413701000'}"
+        ),
+    )
+    # Shorthands kept for older clients; equivalent to the corrections keys
+    # 'bill_of_lading.gross_weight_kg' and 'invoice.gross_weight_kg'.
     gross_weight_kg: float | None = Field(
         default=None, gt=0, description="Corrected B/L gross weight in kg"
     )

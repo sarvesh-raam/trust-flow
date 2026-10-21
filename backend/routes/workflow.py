@@ -9,7 +9,7 @@ from typing import Any
 
 import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from sqlmodel import Session as DBSession, select
 
 from db import UploadRunRow, WorkflowRunRow, engine
@@ -502,21 +502,101 @@ async def list_workflows(user_id: str = Depends(get_current_user)) -> list[Workf
     return [WorkflowResponse(**_to_record(r).model_dump()) for r in rows]
 
 
-def _carried_over_issues(cr: ComplianceResult | None) -> list:
+def _carried_over_issues(cr: ComplianceResult | None, corrected: set[str]) -> list:
     """Issues raised before validation that a resume does not re-derive.
 
     OCR-quality and HS-review warnings come from nodes that are not re-run;
     everything else (weight reconciliation, deterministic and country checks)
     is recomputed on the corrected data.  Country-rule messages start with a
     "[US]"-style tag, which is how they are told apart from HS-review warnings.
+    An HS-review warning is dropped once the operator has set that HS code.
     """
     if not cr:
         return []
     return [
         i for i in cr.issues
         if i.field == "ocr_confidence"
-        or (i.field.startswith("line_items.") and not i.message.startswith("["))
+        or (
+            i.field.startswith("line_items.")
+            and not i.message.startswith("[")
+            and i.field not in corrected
+        )
     ]
+
+
+#: Document fields an operator may correct, by document key.
+_EDITABLE_FIELDS: dict[str, tuple[type[BaseModel], frozenset[str]]] = {
+    "invoice": (InvoiceDocument, frozenset({
+        "invoice_number", "date", "seller", "buyer", "total_amount", "currency", "gross_weight_kg",
+    })),
+    "bill_of_lading": (BillOfLading, frozenset({
+        "bl_number", "vessel", "port_of_loading", "port_of_discharge",
+        "gross_weight_kg", "consignee", "shipper",
+    })),
+}
+_HS_CODE_PATH_RE = re.compile(r"^line_items\.(\d+)\.hs_code$")
+
+
+def _collect_corrections(body: ResumeRequest) -> dict[str, Any]:
+    corrections: dict[str, Any] = dict(body.corrections)
+    if body.gross_weight_kg is not None:
+        corrections.setdefault("bill_of_lading.gross_weight_kg", body.gross_weight_kg)
+    if body.invoice_gross_weight_kg is not None:
+        corrections.setdefault("invoice.gross_weight_kg", body.invoice_gross_weight_kg)
+    return corrections
+
+
+def _apply_corrections(
+    invoice: InvoiceDocument | None,
+    bl: BillOfLading | None,
+    corrections: dict[str, Any],
+) -> tuple[InvoiceDocument | None, BillOfLading | None]:
+    """Return copies of the documents with the operator's corrections applied.
+
+    A document that was never extracted is created from the corrections.
+    Raises HTTPException(422) listing every unknown path or invalid value.
+    """
+    docs: dict[str, Any] = {"invoice": invoice, "bill_of_lading": bl}
+    updates: dict[str, dict[str, Any]] = {"invoice": {}, "bill_of_lading": {}}
+    hs_codes: dict[int, Any] = {}
+    errors: list[str] = []
+
+    for path, value in corrections.items():
+        if m := _HS_CODE_PATH_RE.match(path):
+            hs_codes[int(m.group(1))] = value
+            continue
+        doc_key, _, field = path.partition(".")
+        if field not in _EDITABLE_FIELDS.get(doc_key, (None, frozenset()))[1]:
+            errors.append(f"{path}: not a correctable field")
+        elif field == "gross_weight_kg" and not (isinstance(value, (int, float)) and value > 0):
+            errors.append(f"{path}: must be a number greater than 0")
+        else:
+            updates[doc_key][field] = value
+
+    for doc_key, fields in updates.items():
+        if not fields:
+            continue
+        model, _ = _EDITABLE_FIELDS[doc_key]
+        current = docs[doc_key]
+        try:
+            docs[doc_key] = model.model_validate({**(current.model_dump() if current else {}), **fields})
+        except ValidationError as exc:
+            errors += [f"{doc_key}.{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in exc.errors()]
+
+    if hs_codes:
+        inv = docs["invoice"]
+        items = [li.model_copy() for li in (inv.line_items if inv else [])]
+        for idx, code in hs_codes.items():
+            if idx >= len(items):
+                errors.append(f"line_items.{idx}.hs_code: no such line item")
+            else:
+                items[idx].hs_code = (str(code).strip() if code is not None else "") or None
+        if inv is not None:
+            docs["invoice"] = inv.model_copy(update={"line_items": items})
+
+    if errors:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="; ".join(errors))
+    return docs["invoice"], docs["bill_of_lading"]
 
 
 @router.post(
@@ -543,19 +623,21 @@ async def resume_workflow(
             detail="Paused graph state is no longer available — please start a new run",
         )
 
-    invoice = _as_model(InvoiceDocument, values.get("invoice"))
-    bl = _as_model(BillOfLading, values.get("bill_of_lading"))
-    if body.gross_weight_kg is not None and bl is not None:
-        bl = bl.model_copy(update={"gross_weight_kg": body.gross_weight_kg})
-    if body.invoice_gross_weight_kg is not None and invoice is not None:
-        invoice = invoice.model_copy(update={"gross_weight_kg": body.invoice_gross_weight_kg})
+    corrections = _collect_corrections(body)
+    if not corrections:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="No corrections supplied")
+    invoice, bl = _apply_corrections(
+        _as_model(InvoiceDocument, values.get("invoice")),
+        _as_model(BillOfLading, values.get("bill_of_lading")),
+        corrections,
+    )
 
     # Rebuild compliance for everything downstream of extraction: the weight
     # check runs here, and writing the update "as" compliance_reason makes
     # deterministic_validate and country_validate run again on the corrected
     # data before the graph decides whether to block a second time.
     cr = _as_model(ComplianceResult, values.get("compliance_result"))
-    compliance = _merge_issues(None, _carried_over_issues(cr) + weight_issues(invoice, bl))
+    compliance = _merge_issues(None, _carried_over_issues(cr, set(corrections)) + weight_issues(invoice, bl))
 
     await document_graph.aupdate_state(
         config,
@@ -565,12 +647,7 @@ async def resume_workflow(
 
     row = _save(run_id, WorkflowStatus.RUNNING) or row
     background_tasks.add_task(_resume_graph, workflow_id=run_id)
-    log.info(
-        "workflow.resumed",
-        workflow_id=run_id,
-        bl_weight=body.gross_weight_kg,
-        invoice_weight=body.invoice_gross_weight_kg,
-    )
+    log.info("workflow.resumed", workflow_id=run_id, corrected=sorted(corrections))
     return WorkflowResponse(**_to_record(row).model_dump())
 
 

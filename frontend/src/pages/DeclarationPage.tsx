@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getRunStatus, resumeWorkflow, type BBoxEntry, type ComplianceIssue, type WorkflowStep } from "@/lib/api";
+import { buildCorrections, correctionFieldsFor, currentValue, type CorrectionField } from "@/lib/corrections";
 import PDFViewerPanel from "@/components/PDFViewerPanel";
 import { useDemoMode } from "@/demo/DemoContext";
 import { DEMO_WORKFLOW } from "@/demo/mockData";
@@ -273,27 +274,31 @@ function TraceNode({
   );
 }
 
-// ── HITL Correction Panel (demo only) ────────────────────────────────────────
+// ── HITL Correction Panel ─────────────────────────────────────────────────────
 function HitlPanel({
   phase,
-  correctedWeight,
-  onWeightChange,
+  issues,
+  fields,
+  values,
+  extracted,
+  onChange,
   onSubmit,
-  issue,
-  invoiceWeight,
-  blWeight,
   error,
   finalStatus,
+  correctedCount,
 }: {
   phase: "blocked" | "resuming" | "completed";
-  finalStatus?: string;
-  correctedWeight: string;
-  onWeightChange: (v: string) => void;
+  /** Number of fields in the submitted corrections (the issues are gone once completed). */
+  correctedCount: number;
+  issues: ComplianceIssue[];
+  fields: CorrectionField[];
+  values: Record<string, string>;
+  /** Originally extracted value per path, shown under each input. */
+  extracted: Record<string, string>;
+  onChange: (path: string, value: string) => void;
   onSubmit: () => void;
-  issue?: any;
-  invoiceWeight?: string | number | null;
-  blWeight?: string | number | null;
   error?: string | null;
+  finalStatus?: string;
 }) {
   const mono = "'JetBrains Mono', monospace";
 
@@ -319,7 +324,7 @@ function HitlPanel({
               CORRECTIONS ACCEPTED — PIPELINE RESUMED
             </p>
             <p style={{ fontFamily: mono, fontSize: "0.6rem", color: "var(--text-secondary)", marginTop: "3px" }}>
-              Gross weight updated to {correctedWeight} kg · Compliance status: {finalStatus ?? "—"}
+              {correctedCount} field{correctedCount === 1 ? "" : "s"} corrected · Compliance status: {finalStatus ?? "—"}
             </p>
           </div>
         </div>
@@ -404,25 +409,34 @@ function HitlPanel({
         HUMAN REVIEW REQUIRED
       </div>
 
-      {/* Issue card */}
-      <div style={{
-        padding:         "10px 12px",
-        backgroundColor: "rgba(220, 38, 38, 0.06)",
-        border:          "1px solid rgba(239,68,68,0.2)",
-        borderLeft:      "3px solid #ef4444",
-        marginBottom:    "14px",
-      }}>
-        <p style={{ fontFamily: mono, fontSize: "0.6rem", fontWeight: 700, color: "var(--accent-red)", marginBottom: "4px" }}>
-          [BLOCK] {issue?.field?.toUpperCase() || "(UNKNOWN_FIELD)"}
-        </p>
-        <p style={{ fontFamily: mono, fontSize: "0.63rem", color: "var(--text-muted)", lineHeight: 1.5 }}>
-          {issue?.message || "No specific message provided."}
-        </p>
-      </div>
+      {/* Issue cards */}
+      {issues.map((issue, i) => (
+        <div key={`${issue.field}-${i}`} style={{
+          padding:         "10px 12px",
+          backgroundColor: "rgba(220, 38, 38, 0.06)",
+          border:          "1px solid rgba(239,68,68,0.2)",
+          borderLeft:      "3px solid #ef4444",
+          marginBottom:    "8px",
+        }}>
+          <p style={{ fontFamily: mono, fontSize: "0.6rem", fontWeight: 700, color: "var(--accent-red)", marginBottom: "4px" }}>
+            [BLOCK] {issue.field.toUpperCase()}
+          </p>
+          <p style={{ fontFamily: mono, fontSize: "0.63rem", color: "var(--text-muted)", lineHeight: 1.5 }}>
+            {issue.message}
+          </p>
+        </div>
+      ))}
 
-      {/* Weight correction input */}
-      <div style={{ marginBottom: "12px" }}>
-        <label style={{
+      {fields.length === 0 && (
+        <p style={{ fontFamily: mono, fontSize: "0.62rem", color: "var(--text-secondary)", lineHeight: 1.5, margin: "6px 0 12px" }}>
+          This issue can't be fixed by editing a field — start a new run with corrected documents.
+        </p>
+      )}
+
+      {/* Correction inputs — one per field that resolves a blocking issue */}
+      {fields.map((field) => (
+      <div key={field.path} style={{ margin: "12px 0" }}>
+        <label htmlFor={`fix-${field.path}`} style={{
           fontFamily:    mono,
           fontSize:      "0.58rem",
           fontWeight:    700,
@@ -431,13 +445,14 @@ function HitlPanel({
           display:       "block",
           marginBottom:  "6px",
         }}>
-          CORRECTED B/L GROSS WEIGHT (KG)
+          {field.label}
         </label>
         <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
           <input
-            type="number"
-            value={correctedWeight}
-            onChange={(e) => onWeightChange(e.target.value)}
+            id={`fix-${field.path}`}
+            type={field.numeric ? "number" : "text"}
+            value={values[field.path] ?? ""}
+            onChange={(e) => onChange(field.path, e.target.value)}
             style={{
               flex:            1,
               backgroundColor: "var(--bg-primary)",
@@ -450,7 +465,7 @@ function HitlPanel({
               outline:         "none",
               letterSpacing:   "0.04em",
             }}
-            placeholder="Enter correct gross weight in kg"
+            placeholder={field.placeholder}
             onFocus={(e) => {
               e.currentTarget.style.borderColor = "var(--accent-blue)";
               e.currentTarget.style.boxShadow = "0 0 0 1px #3B82F6, 0 0 12px rgba(59,130,246,0.15)";
@@ -460,13 +475,20 @@ function HitlPanel({
               e.currentTarget.style.boxShadow = "none";
             }}
           />
-          <span style={{ fontFamily: mono, fontSize: "0.65rem", color: "var(--text-secondary)" }}>kg</span>
+          {field.path.endsWith("gross_weight_kg") && (
+            <span style={{ fontFamily: mono, fontSize: "0.65rem", color: "var(--text-secondary)" }}>kg</span>
+          )}
         </div>
+        <p style={{ fontFamily: mono, fontSize: "0.56rem", color: "var(--text-muted)", marginTop: "4px" }}>
+          Extracted: {extracted[field.path] || "NOT SPECIFIED"}
+        </p>
       </div>
+      ))}
 
       {/* Submit button */}
       <button
         onClick={onSubmit}
+        disabled={fields.length === 0}
         style={{
           width:           "100%",
           backgroundColor: "var(--accent-red)",
@@ -478,7 +500,8 @@ function HitlPanel({
           letterSpacing:   "0.14em",
           textTransform:   "uppercase",
           padding:         "10px",
-          cursor:          "pointer",
+          cursor:          fields.length === 0 ? "not-allowed" : "pointer",
+          opacity:         fields.length === 0 ? 0.5 : 1,
           transition:      "all 0.15s ease",
         }}
         onMouseEnter={(e) => {
@@ -499,10 +522,6 @@ function HitlPanel({
           {error}
         </p>
       )}
-
-      <p style={{ fontFamily: mono, fontSize: "0.58rem", color: "var(--text-muted)", marginTop: "10px", textAlign: "center" }}>
-        B/L declared: {blWeight ? `${blWeight} kg` : "NOT SPECIFIED"} · Invoice extracted: {invoiceWeight ?? "NOT SPECIFIED"} kg
-      </p>
     </div>
   );
 }
@@ -516,7 +535,8 @@ interface DeclarationPageProps {
 export default function DeclarationPage({ runId, onBack }: DeclarationPageProps) {
   const [docSource,    setDocSource]    = useState<"invoice" | "bl">("invoice");
   const [expandedNode, setExpandedNode] = useState<string | null>(null);
-  const [correctedWeight, setCorrectedWeight] = useState("");
+  const [correctionValues, setCorrectionValues] = useState<Record<string, string>>({});
+  const [correctedCount,   setCorrectedCount]   = useState(0);
   const [resumeSubmitting, setResumeSubmitting] = useState(false);
   const [resumeSubmitted,  setResumeSubmitted]  = useState(false);
   const [resumeError,      setResumeError]      = useState<string | null>(null);
@@ -567,33 +587,56 @@ export default function DeclarationPage({ runId, onBack }: DeclarationPageProps)
       : resumeSubmitted && liveStatus === "completed"
         ? "completed"
         : "blocked";
-  const blockingIssue = (result.blocking_issues?.[0] ?? result.issues?.[0]) as ComplianceIssue | undefined;
-  const realInvoiceWeight = result.invoice?.gross_weight_kg as number | undefined;
-  const shownInvoiceWeight = isDemoMode ? 820 : realInvoiceWeight;
-  const shownBlWeight      = isDemoMode ? 860 : (result.bill_of_lading?.gross_weight_kg as number | undefined);
+  const blockingIssues: ComplianceIssue[] = isDemoMode
+    ? [...DEMO_WORKFLOW.compliance_issues]
+    : ((result.blocking_issues ?? result.issues ?? []) as ComplianceIssue[]).filter((i) => i.severity === "block");
+  const correctionFields = correctionFieldsFor(blockingIssues);
+  // Values as extracted from the documents (demo data has no document objects).
+  const extractedValues: Record<string, string> = isDemoMode
+    ? { "invoice.gross_weight_kg": "820", "bill_of_lading.gross_weight_kg": "860" }
+    : Object.fromEntries(correctionFields.map((f) => [f.path, currentValue(result, f.path)]));
+  const shownInvoiceWeight = Number(extractedValues["invoice.gross_weight_kg"] ?? result.invoice?.gross_weight_kg) || undefined;
+  const shownBlWeight      = Number(extractedValues["bill_of_lading.gross_weight_kg"] ?? result.bill_of_lading?.gross_weight_kg) || undefined;
 
-  // Pre-fill the correction with the invoice weight the first time it is known.
+  // Pre-fill each new input once with the extracted value. A missing weight
+  // starts from the other document's weight, the most likely correct value.
+  const fieldKey = correctionFields.map((f) => f.path).join("|");
   useEffect(() => {
-    if (correctedWeight !== "") return;
-    if (isDemoMode) setCorrectedWeight("820");
-    else if (realInvoiceWeight) setCorrectedWeight(String(realInvoiceWeight));
-  }, [isDemoMode, realInvoiceWeight, correctedWeight]);
+    setCorrectionValues((prev) => {
+      const next = { ...prev };
+      for (const f of correctionFields) {
+        if (f.path in next) continue;
+        let v = extractedValues[f.path] ?? "";
+        if (!v && f.path === "bill_of_lading.gross_weight_kg") v = extractedValues["invoice.gross_weight_kg"] ?? currentValue(result, "invoice.gross_weight_kg");
+        if (!v && f.path === "invoice.gross_weight_kg") v = extractedValues["bill_of_lading.gross_weight_kg"] ?? currentValue(result, "bill_of_lading.gross_weight_kg");
+        next[f.path] = v;
+      }
+      return next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fieldKey, data?.updated_at]);
 
   const submitRealCorrections = async () => {
-    const weight = Number(correctedWeight);
-    if (!Number.isFinite(weight) || weight <= 0) {
-      setResumeError("Enter a gross weight greater than 0 kg.");
+    const built = buildCorrections(correctionFields, correctionValues);
+    if ("error" in built) {
+      setResumeError(built.error);
       return;
     }
     setResumeError(null);
     setResumeSubmitting(true);
     try {
-      await resumeWorkflow(runId, { gross_weight_kg: weight });
+      await resumeWorkflow(runId, built);
+      setCorrectedCount(Object.keys(built.corrections).length);
       setResumeSubmitted(true);
       // Status is now "running" server-side; refetching restarts polling.
       await queryClient.invalidateQueries({ queryKey: ["run-status", runId] });
     } catch (e: any) {
-      setResumeError(e?.response?.data?.detail ?? "Could not resume the workflow — please try again.");
+      const detail = e?.response?.data?.detail;
+      setResumeError(
+        typeof detail === "string" ? detail
+          : Array.isArray(detail) ? detail.map((d: any) => d?.msg ?? String(d)).join("; ")
+          : "Could not resume the workflow — please try again.",
+      );
     } finally {
       setResumeSubmitting(false);
     }
@@ -1068,16 +1111,17 @@ export default function DeclarationPage({ runId, onBack }: DeclarationPageProps)
             {(needsHITL || isResuming || (isDemoMode && demoPhase === "completed") || (!isDemoMode && realPhase === "completed")) && (
               <HitlPanel
                 phase={currentPhase as any}
-                correctedWeight={correctedWeight}
-                onWeightChange={setCorrectedWeight}
-                issue={isDemoMode ? DEMO_WORKFLOW.compliance_issues[0] : blockingIssue}
-                invoiceWeight={shownInvoiceWeight}
-                blWeight={shownBlWeight}
+                issues={blockingIssues}
+                fields={correctionFields}
+                values={correctionValues}
+                extracted={extractedValues}
+                onChange={(path, value) => setCorrectionValues((prev) => ({ ...prev, [path]: value }))}
                 error={isDemoMode ? null : resumeError}
                 finalStatus={compStatus}
+                correctedCount={isDemoMode ? 1 : correctedCount}
                 onSubmit={async () => {
                   if (isDemoMode) {
-                    submitCorrections(parseFloat(correctedWeight) || 860);
+                    submitCorrections(parseFloat(correctionValues["bill_of_lading.gross_weight_kg"]) || 860);
                   } else {
                     await submitRealCorrections();
                   }

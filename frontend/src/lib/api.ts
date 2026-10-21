@@ -124,8 +124,8 @@ export const getRunStatus = async (runId: string): Promise<StatusResponse> => {
 };
 
 export interface ResumeCorrections {
-  gross_weight_kg?: number;
-  invoice_gross_weight_kg?: number;
+  /** Corrected values keyed by issue field path, e.g. "invoice.date". */
+  corrections: Record<string, string | number>;
 }
 
 export const resumeWorkflow = async (runId: string, corrections: ResumeCorrections): Promise<WorkflowResponse> => {

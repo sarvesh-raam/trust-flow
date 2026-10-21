@@ -157,6 +157,58 @@ def test_resume_rejects_non_positive_weight(client, fake_docs):
     assert r.status_code == 422
 
 
+def test_resume_corrects_a_non_weight_field(client, fake_docs):
+    fake_docs.invoice_date = "15/03/2024"
+    run_id, _ = _start_run(client)
+    st = _status(client, run_id)
+    assert st["status"] == "blocked"
+    assert [i["field"] for i in st["result"]["blocking_issues"]] == ["invoice.date"]
+
+    r = client.post(
+        f"/api/v1/workflow/resume/{run_id}",
+        json={"corrections": {"invoice.date": "2024-03-15"}},
+        headers=auth_headers("alice"),
+    )
+    assert r.status_code == 200, r.text
+    st = _status(client, run_id)
+    assert st["status"] == "completed", st["result"]
+    assert st["result"]["declaration"]["invoice"]["date"] == "2024-03-15"
+
+
+def test_resume_corrects_both_weights_and_hs_code(client, fake_docs):
+    fake_docs.bl_weight = 1000
+    run_id, _ = _start_run(client)
+    r = client.post(
+        f"/api/v1/workflow/resume/{run_id}",
+        json={"corrections": {
+            "invoice.gross_weight_kg": 990,
+            "bill_of_lading.gross_weight_kg": 1000,
+            "line_items.0.hs_code": "8471.30.0100",
+        }},
+        headers=auth_headers("alice"),
+    )
+    assert r.status_code == 200, r.text
+    decl = _status(client, run_id)["result"]["declaration"]
+    assert decl["invoice"]["gross_weight_kg"] == 990
+    assert decl["invoice"]["line_items"][0]["hs_code"] == "8471.30.0100"
+
+
+def test_resume_rejects_unknown_or_invalid_corrections(client, fake_docs):
+    fake_docs.bl_weight = 1000
+    run_id, _ = _start_run(client)
+    hdrs = auth_headers("alice")
+    for corrections in (
+        {},
+        {"invoice.run_id": "x"},
+        {"invoice.total_amount": "lots"},
+        {"bill_of_lading.gross_weight_kg": -5},
+        {"line_items.9.hs_code": "8471"},
+    ):
+        r = client.post(f"/api/v1/workflow/resume/{run_id}", json={"corrections": corrections}, headers=hdrs)
+        assert r.status_code == 422, (corrections, r.text)
+    assert _status(client, run_id)["status"] == "blocked"
+
+
 def test_other_users_cannot_see_or_resume_runs(client, fake_docs):
     fake_docs.bl_weight = 1000
     run_id, doc_id = _start_run(client, "alice")

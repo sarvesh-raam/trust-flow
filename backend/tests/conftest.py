@@ -33,6 +33,7 @@ def auth_headers(user_id: str) -> dict[str, str]:
 class FakeDocs:
     """Controls what the mocked extraction returns for each test."""
 
+    invoice_date = "2026-01-05"
     invoice_weight = 820.0
     bl_weight = 820.0
     total_amount = 1200.0
@@ -54,7 +55,7 @@ def fake_docs(monkeypatch):
 
     def fake_extract(state):
         state.invoice = InvoiceDocument(
-            invoice_number="INV-001", date="2026-01-05", seller="Acme Corp", buyer="Globex LLC",
+            invoice_number="INV-001", date=docs.invoice_date, seller="Acme Corp", buyer="Globex LLC",
             currency="USD", total_amount=docs.total_amount, gross_weight_kg=docs.invoice_weight,
             line_items=[LineItem(description="laptop computers", quantity=10, unit_price=120)],
         )
