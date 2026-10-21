@@ -1,4 +1,5 @@
-import axios from "axios";
+import axios, { type AxiosRequestConfig } from "axios";
+import { auth, type User } from "./firebase";
 
 export type CountryCode = "us" | "uae";
 export type WorkflowStatus = "queued" | "running" | "completed" | "failed" | "blocked" | "interrupted";
@@ -30,6 +31,12 @@ export interface BBoxEntry {
   source: "invoice" | "bl";
 }
 
+export interface ComplianceIssue {
+  field: string;
+  message: string;
+  severity: "warn" | "block";
+}
+
 export interface WorkflowResponse {
   id: string;
   status: WorkflowStatus;
@@ -48,16 +55,48 @@ export interface StatusResponse extends WorkflowResponse {
   bl_pdf_url?: string;
 }
 
-const api = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE || (window.location.hostname === "localhost" ? "http://localhost:8000/api/v1" : "/api/v1"),
-});
+const API_BASE: string =
+  import.meta.env.VITE_API_BASE ||
+  (window.location.hostname === "localhost" ? "http://localhost:8000/api/v1" : "/api/v1");
+
+const api = axios.create({ baseURL: API_BASE });
+
+/** Turn a backend path like "/api/v1/upload/…" into a URL on the API host. */
+export function resolveApiUrl(path: string): string {
+  return path.startsWith("/api/v1") ? API_BASE + path.slice("/api/v1".length) : path;
+}
+
+export function authHeaders(): Record<string, string> {
+  const token = localStorage.getItem("access_token");
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+/** Exchange the Firebase ID token for a backend JWT and store it. */
+export async function exchangeFirebaseToken(u: User, forceRefresh = false): Promise<void> {
+  const idToken = await u.getIdToken(forceRefresh);
+  // Plain axios call — must not go through the 401-retry interceptor below.
+  const { data } = await axios.post(`${API_BASE}/auth/google`, { firebase_token: idToken });
+  localStorage.setItem("access_token", data.access_token);
+}
 
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem("access_token");
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
-  }
+  Object.assign(config.headers, authHeaders());
   return config;
+});
+
+// On 401, re-exchange the Firebase token once and retry the request, so an
+// expired backend JWT never surfaces as an error while the user is signed in.
+let refreshing: Promise<void> | null = null;
+api.interceptors.response.use(undefined, async (error) => {
+  const original = error.config as (AxiosRequestConfig & { _retried?: boolean }) | undefined;
+  const user = auth.currentUser;
+  if (error.response?.status !== 401 || !original || original._retried || !user) {
+    throw error;
+  }
+  original._retried = true;
+  refreshing ??= exchangeFirebaseToken(user, true).finally(() => { refreshing = null; });
+  await refreshing;
+  return api(original);
 });
 
 export const uploadDocument = async (invoice: File, bl: File, country: CountryCode) => {
@@ -80,7 +119,17 @@ export const listWorkflows = async (): Promise<WorkflowResponse[]> => {
 };
 
 export const getRunStatus = async (runId: string): Promise<StatusResponse> => {
-  const { data } = await api.get(`/workflow/${runId}`);
+  const { data } = await api.get(`/workflow/status/${runId}`);
+  return data;
+};
+
+export interface ResumeCorrections {
+  gross_weight_kg?: number;
+  invoice_gross_weight_kg?: number;
+}
+
+export const resumeWorkflow = async (runId: string, corrections: ResumeCorrections): Promise<WorkflowResponse> => {
+  const { data } = await api.post(`/workflow/resume/${runId}`, corrections);
   return data;
 };
 

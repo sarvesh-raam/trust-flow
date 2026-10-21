@@ -1,59 +1,41 @@
-# United Arab Emirates — Document Validation Rules
-# Applied during the `validate` node in the LangGraph pipeline.
+# United Arab Emirates — import customs declaration rules
+# Applied by the `country_validate` node (backend/graph.py).
+#
+# Starting-point rules for the demo. Verify against current ICP / Dubai
+# Customs guidance or with a licensed customs broker before relying on them.
 
 jurisdiction: UAE
-version: "1.0.0"
+version: "2.0.0"
+authority: "UAE Federal Authority for Identity, Citizenship, Customs & Port Security (ICP) and emirate customs"
 
 required_fields:
-  - emirates_id         # 15-digit Emirates ID
-  - legal_name_en       # Name in English
-  - legal_name_ar       # Name in Arabic (optional but preferred)
-  - nationality
-  - date_of_birth
-  - document_type
-  - visa_status         # Resident / Citizen / Visitor
+  severity: warn
+  invoice: [invoice_number, date, seller, buyer, currency, line_items]
+  bill_of_lading: [bl_number, vessel, port_of_loading, port_of_discharge, consignee, shipper]
 
 field_formats:
-  emirates_id:
-    pattern: "^784-\\d{4}-\\d{7}-\\d{1}$"
-    description: "784-YYYY-XXXXXXX-C"
-  date_of_birth:
-    pattern: "^\\d{4}-\\d{2}-\\d{2}$"
-    format: "YYYY-MM-DD"
+  invoice.currency:
+    pattern: "^[A-Z]{3}$"
+    description: "a 3-letter ISO-4217 currency code"
+    severity: warn
 
-age_requirements:
-  minimum_age: 21        # UAE contractual capacity
+line_items:
+  require_hs_code: true
 
-document_types:
-  accepted:
-    - passport
-    - emirates_id_card
-    - gcc_id             # GCC nationals
-    - residence_visa
+restricted_hs_prefixes:
+  - prefix: "93"
+    severity: warn
+    message: "Arms and ammunition — prior import approval required"
+  - prefix: "3604"
+    severity: warn
+    message: "Fireworks — prior import approval required"
+  - prefix: "2203"
+    severity: warn
+    message: "Beer — alcohol import licence required"
+  - prefix: "2208"
+    severity: warn
+    message: "Spirits — alcohol import licence required"
 
-visa_statuses:
-  - citizen
-  - gcc_national
-  - resident
-  - visitor
-
-address_rules:
-  require_emirate: true
-  emirates:
-    - Abu Dhabi
-    - Dubai
-    - Sharjah
-    - Ajman
-    - Umm Al Quwain
-    - Ras Al Khaimah
-    - Fujairah
-
-compliance:
-  kyc_required: true
-  aml_check: true
-  cbuae_screening: true  # Central Bank UAE screening
-  fatf_compliant: true
-
-retention_policy:
-  years: 5
-  regulation: "CBUAE AML/CFT"
+required_screenings:
+  - "Denied-party screening (UN Security Council and UAE Local Terrorist List)"
+  - "Certificate of origin accompanying the commercial invoice"

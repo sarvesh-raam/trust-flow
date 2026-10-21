@@ -1,19 +1,30 @@
 """Workflow routes — trigger, monitor, and bbox-annotate LangGraph document pipelines."""
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime
 from typing import Any
 
 import structlog
-from fastapi import APIRouter, BackgroundTasks, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from pydantic import BaseModel, Field
+from sqlmodel import Session as DBSession, select
 
-from db import UploadRunRow
-from workflow_db import db as workflow_db_instance
-from graph import GraphState, NodeInterrupt, document_graph
-# from graph import GraphState, NodeInterrupt, document_graph  # Moved inside functions
+from db import UploadRunRow, WorkflowRunRow, engine
+from dependencies import get_current_user
+from graph import (
+    GraphState,
+    NodeInterrupt,
+    _merge_issues,
+    document_graph,
+    persist_audit_trail,
+    weight_issues,
+)
 from models import (
+    AuditEvent,
+    BillOfLading,
+    ComplianceResult,
     CountryCode,
     InvoiceDocument,
     ResumeRequest,
@@ -26,9 +37,6 @@ from models import (
 
 log = structlog.get_logger(__name__)
 router = APIRouter()
-
-# In-memory store — replace with SQLModel/DB in production
-_workflows: dict[str, WorkflowRecord] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +176,91 @@ def map_fields_to_bboxes(
 
 
 # ---------------------------------------------------------------------------
-# Background pipeline runner
+# Persistence helpers
+# ---------------------------------------------------------------------------
+
+def _to_record(row: WorkflowRunRow) -> WorkflowRecord:
+    return WorkflowRecord(
+        id=uuid.UUID(row.id),
+        document_id=uuid.UUID(row.document_id),
+        country=CountryCode(row.country),
+        status=WorkflowStatus(row.status),
+        steps=[WorkflowStep(**s) for s in json.loads(row.steps_json or "[]")],
+        result=json.loads(row.result_json or "{}"),
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+def _get_owned(workflow_id: str, user_id: str) -> WorkflowRunRow:
+    with DBSession(engine) as session:
+        row = session.get(WorkflowRunRow, workflow_id)
+    # 404 (not 403) so other users' run ids are not confirmed to exist.
+    if not row or row.user_id != user_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found")
+    return row
+
+
+def _save(
+    workflow_id: str,
+    status_: WorkflowStatus,
+    result: dict[str, Any] | None = None,
+    steps: list[WorkflowStep] | None = None,
+) -> WorkflowRunRow | None:
+    """Update a workflow row and mirror its status onto the upload row."""
+    with DBSession(engine) as session:
+        row = session.get(WorkflowRunRow, workflow_id)
+        if not row:
+            return None
+        row.status = status_.value
+        if result is not None:
+            row.result_json = json.dumps(result, default=str)
+        if steps is not None:
+            row.steps_json = json.dumps([s.model_dump(mode="json") for s in steps])
+        row.updated_at = datetime.utcnow()
+
+        upload = session.get(UploadRunRow, row.document_id)
+        if upload:
+            upload.status = "hitl_paused" if status_ == WorkflowStatus.BLOCKED else status_.value
+            if result is not None:
+                upload.summary = result.get("summary") or upload.summary
+                upload.error = result.get("error")
+                if result.get("declaration"):
+                    upload.declaration_json = json.dumps(result["declaration"], default=str)
+            upload.updated_at = row.updated_at
+            session.add(upload)
+
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+        return row
+
+
+def mark_interrupted_runs() -> int:
+    """At startup: fail runs whose background task died with the old process.
+
+    BLOCKED runs are left alone — their graph state lives in the SQLite
+    checkpointer, so they can still be resumed.
+    """
+    active = [WorkflowStatus.QUEUED.value, WorkflowStatus.RUNNING.value]
+    with DBSession(engine) as session:
+        ids = [
+            r.id for r in session.exec(
+                select(WorkflowRunRow).where(WorkflowRunRow.status.in_(active))  # type: ignore[attr-defined]
+            ).all()
+        ]
+    for wid in ids:
+        _save(wid, WorkflowStatus.FAILED, result={
+            "error": "Server restarted while this run was in progress — please start a new run.",
+            "bboxes": [],
+        })
+    if ids:
+        log.warning("workflow.marked_interrupted", count=len(ids))
+    return len(ids)
+
+
+# ---------------------------------------------------------------------------
+# Graph-state helpers (values may be models, or dicts after deserialisation)
 # ---------------------------------------------------------------------------
 
 def _state_get(state: Any, key: str, default: Any = None) -> Any:
@@ -178,19 +270,101 @@ def _state_get(state: Any, key: str, default: Any = None) -> Any:
     return getattr(state, key, default)
 
 
-def _handle_blocked(wf: WorkflowRecord, workflow_id: str, msg: str, config: dict) -> None:
-    """Shared logic for setting wf to BLOCKED after a NodeInterrupt."""
-    wf.status = WorkflowStatus.BLOCKED
-    from graph import document_graph
-    saved_state = document_graph.get_state(config)
-    issues: list[dict] = []
-    if saved_state and getattr(saved_state, "values", None):
-        cr = saved_state.values.get("compliance_result")
-        if cr:
-            issues = [i.model_dump() for i in cr.issues]
-    wf.result = {"hitl_required": True, "message": msg, "bboxes": [], "issues": issues}
-    wf.updated_at = datetime.utcnow()
+def _as_model(model: type[BaseModel], value: Any) -> Any:
+    if value is None or isinstance(value, model):
+        return value
+    return model.model_validate(value if isinstance(value, dict) else value.model_dump())
+
+
+def _dump(value: Any) -> Any:
+    return value.model_dump(mode="json") if isinstance(value, BaseModel) else value
+
+
+def _steps_from(audit_trail: list[Any]) -> list[WorkflowStep]:
+    return [
+        WorkflowStep(name=_state_get(e, "node_name", "?"), status=WorkflowStatus.COMPLETED)
+        for e in audit_trail
+    ]
+
+
+def _bboxes_from(values: Any) -> list[dict[str, Any]]:
+    invoice = _as_model(InvoiceDocument, _state_get(values, "invoice"))
+    raw = (_state_get(values, "invoice_bboxes") or []) + (_state_get(values, "bl_bboxes") or [])
+    return [b.model_dump() for b in map_fields_to_bboxes(invoice, raw)]
+
+
+# ---------------------------------------------------------------------------
+# Background pipeline runner
+# ---------------------------------------------------------------------------
+
+async def _handle_blocked(workflow_id: str, msg: str, config: dict) -> None:
+    """Mark the workflow BLOCKED and expose what the HITL panel needs."""
+    snapshot = await document_graph.aget_state(config)
+    values = getattr(snapshot, "values", None) or {}
+    cr = _as_model(ComplianceResult, values.get("compliance_result"))
+    audit_trail = [_as_model(AuditEvent, e) for e in values.get("audit_trail") or []]
+    issues = [i.model_dump() for i in cr.issues] if cr else []
+
+    # The run may never reach audit_trace, so persist what we have now.
+    persist_audit_trail(workflow_id, audit_trail)
+    _save(
+        workflow_id,
+        WorkflowStatus.BLOCKED,
+        result={
+            "hitl_required":     True,
+            "message":           msg,
+            "compliance_status": "BLOCK",
+            "issues":            issues,
+            "blocking_issues":   [i for i in issues if i["severity"] == "block"],
+            "invoice":           _dump(values.get("invoice")),
+            "bill_of_lading":    _dump(values.get("bill_of_lading")),
+            "bboxes":            _bboxes_from(values),
+        },
+        steps=_steps_from(audit_trail),
+    )
     log.warning("workflow.hitl_interrupt", workflow_id=workflow_id, detail=msg)
+
+
+async def _drive_graph(workflow_id: str, graph_input: GraphState | None) -> None:
+    """Run (graph_input) or resume (None) the graph and record the outcome."""
+    config = {"configurable": {"thread_id": workflow_id}}
+    try:
+        result = await document_graph.ainvoke(graph_input, config)
+
+        # LangGraph 1.1.6+ does NOT re-raise NodeInterrupt — ainvoke returns a
+        # dict containing '__interrupt__' when a node pauses execution.
+        if isinstance(result, dict) and "__interrupt__" in result:
+            interrupts = result["__interrupt__"]
+            msg = str(interrupts[0].value) if interrupts else "HITL interrupt"
+            await _handle_blocked(workflow_id, msg, config)
+            return
+
+        cr = _as_model(ComplianceResult, _state_get(result, "compliance_result"))
+        audit_trail = _state_get(result, "audit_trail") or []
+        bboxes = _bboxes_from(result)
+
+        _save(
+            workflow_id,
+            WorkflowStatus.COMPLETED,
+            result={
+                "declaration":       _state_get(result, "declaration"),
+                "summary":           _state_get(result, "summary", ""),
+                "compliance_status": cr.status if cr else None,
+                "compliance_issues": len(cr.issues) if cr else 0,
+                "audit_events":      len(audit_trail),
+                "bboxes":            bboxes,
+            },
+            steps=_steps_from(audit_trail),
+        )
+        log.info("workflow.completed", workflow_id=workflow_id, bboxes=len(bboxes))
+
+    except NodeInterrupt as exc:
+        # Fallback: older LangGraph behaviour where NodeInterrupt propagates.
+        await _handle_blocked(workflow_id, str(exc), config)
+
+    except Exception as exc:
+        _save(workflow_id, WorkflowStatus.FAILED, result={"error": str(exc), "bboxes": []})
+        log.exception("workflow.failed", workflow_id=workflow_id, error=str(exc))
 
 
 async def _run_graph(
@@ -201,73 +375,19 @@ async def _run_graph(
     bl_pdf_path: str,
 ) -> None:
     """Background task: run the LangGraph pipeline and update workflow state."""
-
-    # Guard: backend may have restarted, wiping the in-memory dict.
-    wf = _workflows.get(workflow_id)
-    if not wf:
-        log.error("workflow.run_graph.missing", workflow_id=workflow_id)
-        return
-
-    # Set RUNNING immediately so the UI reflects progress.
-    wf.status = WorkflowStatus.RUNNING
-    wf.updated_at = datetime.utcnow()
-    log.info("workflow.run_graph.start", workflow_id=workflow_id,
-             invoice=invoice_pdf_path, bl=bl_pdf_path)
-
+    _save(workflow_id, WorkflowStatus.RUNNING)
     initial_state = GraphState(
+        run_id=uuid.UUID(workflow_id),
         document_id=document_id,
         country=country,
         invoice_pdf_path=invoice_pdf_path,
         bl_pdf_path=bl_pdf_path,
     )
+    await _drive_graph(workflow_id, initial_state)
 
-    config = {"configurable": {"thread_id": workflow_id}}
 
-    try:
-        result = await document_graph.ainvoke(initial_state, config)
-
-        # LangGraph 1.1.6+ does NOT re-raise NodeInterrupt — ainvoke returns a
-        # dict containing '__interrupt__' when a node pauses execution.
-        if isinstance(result, dict) and "__interrupt__" in result:
-            interrupts = result["__interrupt__"]
-            msg = str(interrupts[0].value) if interrupts else "HITL interrupt"
-            _handle_blocked(wf, workflow_id, msg, config)
-            return
-
-        # Normal completion — result may be a dict or a GraphState Pydantic model.
-        cr = _state_get(result, "compliance_result")
-        invoice = _state_get(result, "invoice")
-        invoice_bboxes = _state_get(result, "invoice_bboxes") or []
-        bl_bboxes = _state_get(result, "bl_bboxes") or []
-        audit_trail = _state_get(result, "audit_trail") or []
-
-        mapped_bboxes = map_fields_to_bboxes(invoice, invoice_bboxes + bl_bboxes)
-
-        wf.status = WorkflowStatus.COMPLETED
-        wf.result = {
-            "declaration":       _state_get(result, "declaration"),
-            "summary":           _state_get(result, "summary", ""),
-            "compliance_status": cr.status if cr else None,
-            "compliance_issues": len(cr.issues) if cr else 0,
-            "audit_events":      len(audit_trail),
-            "bboxes":            [b.model_dump() for b in mapped_bboxes],
-        }
-        wf.steps = [
-            WorkflowStep(name=e.node_name, status=WorkflowStatus.COMPLETED)
-            for e in audit_trail
-        ]
-        log.info("workflow.completed", workflow_id=workflow_id, bboxes=len(mapped_bboxes))
-
-    except NodeInterrupt as exc:
-        # Fallback: older LangGraph behaviour where NodeInterrupt propagates.
-        _handle_blocked(wf, workflow_id, str(exc), config)
-
-    except Exception as exc:
-        wf.status = WorkflowStatus.FAILED
-        wf.result = {"error": str(exc), "bboxes": []}
-        log.error("workflow.failed", workflow_id=workflow_id, error=str(exc))
-
-    wf.updated_at = datetime.utcnow()
+async def _resume_graph(workflow_id: str) -> None:
+    await _drive_graph(workflow_id, None)
 
 
 # ---------------------------------------------------------------------------
@@ -276,53 +396,45 @@ async def _run_graph(
 
 @router.post(
     "/",
+    response_model=WorkflowResponse,
     status_code=status.HTTP_202_ACCEPTED,
     summary="Start a processing workflow for a document pair",
 )
 async def create_workflow(
     body: WorkflowCreateRequest,
     background_tasks: BackgroundTasks,
+    user_id: str = Depends(get_current_user),
 ) -> WorkflowResponse:
-    workflow_id = str(uuid.uuid4())
-
-    wf = WorkflowRecord(
-        id=uuid.UUID(workflow_id),
-        document_id=body.document_id,
-        country=body.country,
-        status=WorkflowStatus.QUEUED,
-    )
-    _workflows[workflow_id] = wf
-
-    # Resolve actual file paths from the DB row written by the upload route.
     run_id_str = str(body.document_id)
-    with workflow_db_instance.session() as db_session:
+    with DBSession(engine) as db_session:
         upload_row = db_session.get(UploadRunRow, run_id_str)
+    if not upload_row or upload_row.user_id != user_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Upload not found")
 
-    if upload_row:
-        invoice_path = upload_row.invoice_path
-        bl_path      = upload_row.bl_path
-    else:
-        # Fallback for uploads made before this DB-backed path was introduced.
-        invoice_path = f"uploads/{run_id_str}_invoice.pdf"
-        bl_path      = f"uploads/{run_id_str}_bl.pdf"
-        log.warning(
-            "workflow.upload_row_missing",
-            run_id=run_id_str,
-            fallback_invoice=invoice_path,
-            fallback_bl=bl_path,
+    workflow_id = str(uuid.uuid4())
+    with DBSession(engine) as db_session:
+        row = WorkflowRunRow(
+            id=workflow_id,
+            document_id=run_id_str,
+            user_id=user_id,
+            country=body.country.value,
+            status=WorkflowStatus.QUEUED.value,
         )
+        db_session.add(row)
+        db_session.commit()
+        db_session.refresh(row)
 
     background_tasks.add_task(
         _run_graph,
         workflow_id=workflow_id,
         document_id=run_id_str,
         country=body.country.value,
-        invoice_pdf_path=invoice_path,
-        bl_pdf_path=bl_path,
+        invoice_pdf_path=upload_row.invoice_path,
+        bl_pdf_path=upload_row.bl_path,
     )
 
     log.info("workflow.queued", workflow_id=workflow_id, document_id=run_id_str)
-    return WorkflowResponse(**wf.model_dump())
+    return WorkflowResponse(**_to_record(row).model_dump())
 
 
 # NOTE: /status/{run_id} MUST be declared before /{workflow_id} so FastAPI
@@ -332,65 +444,22 @@ async def create_workflow(
     response_model=StatusResponse,
     summary="Get workflow status with field-level bbox annotations",
 )
-async def get_run_status(run_id: str) -> StatusResponse:
+async def get_run_status(run_id: str, user_id: str = Depends(get_current_user)) -> StatusResponse:
     """Return the workflow record plus a `bboxes` list for the PDF viewer overlay.
 
     `run_id` is the same UUID returned by POST /workflow/ (i.e. the workflow_id).
-    The `bboxes` field is populated once the pipeline has completed OCR and
-    extraction; it is an empty list while the run is still in progress.
+    While BLOCKED, `result` also carries `issues`, `invoice` and
+    `bill_of_lading` for the human-review panel.
     """
-    wf = _workflows.get(run_id)
-    if not wf:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
-
-    result = wf.result.copy() if wf.result else {}
-    steps = wf.steps or []
-
-    if wf.status == WorkflowStatus.BLOCKED:
-        from pathlib import Path
-        ckpt_path = Path(f"/tmp/{run_id}/checkpoint.pkl")
-        if ckpt_path.exists():
-            try:
-                import pickle
-                with open(ckpt_path, "rb") as f:
-                    chk = pickle.load(f)
-                    
-                    if hasattr(chk, "values"):
-                        st_vals = chk.values
-                    elif isinstance(chk, dict) and "channel_values" in chk:
-                        st_vals = chk["channel_values"]
-                    elif isinstance(chk, dict):
-                        st_vals = chk
-                    else:
-                        st_vals = getattr(chk, "__dict__", {})
-
-                    if "invoice" in st_vals:
-                        inv = st_vals["invoice"]
-                        result["invoice"] = inv if isinstance(inv, dict) else getattr(inv, "model_dump", lambda: inv.__dict__)()
-                        
-                    if "bill_of_lading" in st_vals:
-                        bl = st_vals["bill_of_lading"]
-                        result["bill_of_lading"] = bl if isinstance(bl, dict) else getattr(bl, "model_dump", lambda: bl.__dict__)()
-
-                    if "audit_trail" in st_vals:
-                        trails = st_vals["audit_trail"]
-                        steps = [WorkflowStep(name=getattr(e, "node_name", e.get("node_name")), status=WorkflowStatus.COMPLETED) for e in trails]
-                        
-            except Exception as e:
-                log.error("workflow.status.checkpoint_read_error", error=str(e))
-
-    raw_bboxes: list[dict[str, Any]] = result.get("bboxes", [])  # type: ignore[assignment]
-    bboxes = [BBoxEntry(**b) for b in raw_bboxes]
-
-    base_data = wf.model_dump(exclude={"result", "steps"})
+    wf = _to_record(_get_owned(run_id, user_id))
+    bboxes = [BBoxEntry(**b) for b in wf.result.get("bboxes", [])]
+    file_base = f"/api/v1/upload/{wf.document_id}/file"
 
     return StatusResponse(
-        **base_data,
-        result=result,
-        steps=steps,
+        **wf.model_dump(),
         bboxes=bboxes,
-        invoice_pdf_url=f"http://localhost:8000/uploads/{wf.document_id}_invoice.pdf",
-        bl_pdf_url=f"http://localhost:8000/uploads/{wf.document_id}_bl.pdf"
+        invoice_pdf_url=f"{file_base}/invoice",
+        bl_pdf_url=f"{file_base}/bl",
     )
 
 
@@ -399,20 +468,40 @@ async def get_run_status(run_id: str) -> StatusResponse:
     response_model=WorkflowResponse,
     summary="Get workflow status and results",
 )
-async def get_workflow(workflow_id: str) -> WorkflowResponse:
-    wf = _workflows.get(workflow_id)
-    if not wf:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found")
-    return WorkflowResponse(**wf.model_dump())
+async def get_workflow(workflow_id: str, user_id: str = Depends(get_current_user)) -> WorkflowResponse:
+    return WorkflowResponse(**_to_record(_get_owned(workflow_id, user_id)).model_dump())
 
 
 @router.get(
     "/",
     response_model=list[WorkflowResponse],
-    summary="List all workflows",
+    summary="List the current user's workflows (newest first)",
 )
-async def list_workflows() -> list[WorkflowResponse]:
-    return [WorkflowResponse(**wf.model_dump()) for wf in _workflows.values()]
+async def list_workflows(user_id: str = Depends(get_current_user)) -> list[WorkflowResponse]:
+    with DBSession(engine) as session:
+        rows = session.exec(
+            select(WorkflowRunRow)
+            .where(WorkflowRunRow.user_id == user_id)
+            .order_by(WorkflowRunRow.created_at.desc())  # type: ignore[attr-defined]
+        ).all()
+    return [WorkflowResponse(**_to_record(r).model_dump()) for r in rows]
+
+
+def _carried_over_issues(cr: ComplianceResult | None) -> list:
+    """Issues raised before validation that a resume does not re-derive.
+
+    OCR-quality and HS-review warnings come from nodes that are not re-run;
+    everything else (weight reconciliation, deterministic and country checks)
+    is recomputed on the corrected data.  Country-rule messages start with a
+    "[US]"-style tag, which is how they are told apart from HS-review warnings.
+    """
+    if not cr:
+        return []
+    return [
+        i for i in cr.issues
+        if i.field == "ocr_confidence"
+        or (i.field.startswith("line_items.") and not i.message.startswith("["))
+    ]
 
 
 @router.post(
@@ -424,134 +513,63 @@ async def resume_workflow(
     run_id: str,
     body: ResumeRequest,
     background_tasks: BackgroundTasks,
+    user_id: str = Depends(get_current_user),
 ) -> WorkflowResponse:
-    wf = _workflows.get(run_id)
-    if not wf:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found")
-    if wf.status != WorkflowStatus.BLOCKED:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Workflow is not blocked")
+    row = _get_owned(run_id, user_id)
+    if row.status != WorkflowStatus.BLOCKED.value:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Workflow is not blocked")
 
     config = {"configurable": {"thread_id": run_id}}
-    
-    # Update state synchronously here
-    from graph import document_graph
-    current_state = document_graph.get_state(config)
-    if not getattr(current_state, "values", None):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Graph state not found")
-    
-    state_vals = dict(current_state.values)
-
-    if body.gross_weight_kg is not None:
-        # Update the B/L weight — this is what the operator is correcting.
-        bl = state_vals.get("bill_of_lading")
-        if bl is not None:
-            if isinstance(bl, dict):
-                bl["gross_weight_kg"] = body.gross_weight_kg
-            else:
-                bl.gross_weight_kg = body.gross_weight_kg
-            state_vals["bill_of_lading"] = bl
-
-        # Also align the invoice weight if it is missing/zero.
-        inv = state_vals.get("invoice")
-        if inv is not None:
-            inv_weight = inv.get("gross_weight_kg") if isinstance(inv, dict) else inv.gross_weight_kg
-            if not inv_weight:
-                if isinstance(inv, dict):
-                    inv["gross_weight_kg"] = body.gross_weight_kg
-                else:
-                    inv.gross_weight_kg = body.gross_weight_kg
-                state_vals["invoice"] = inv
-
-        # Clear all BLOCK-severity issues related to gross_weight so
-        # interrupt_node does not fire again after resume.
-        cr = state_vals.get("compliance_result")
-        if cr:
-            cr.issues = [
-                i for i in cr.issues
-                if not (i.severity == "block" and "gross_weight" in i.field)
-            ]
-            if any(i.severity == "block" for i in cr.issues):
-                cr.status = "BLOCK"
-            elif any(i.severity == "warn" for i in cr.issues):
-                cr.status = "WARN"
-            else:
-                cr.status = "PASS"
-            state_vals["compliance_result"] = cr
-
-        await document_graph.aupdate_state(config, state_vals)
-
-    # Spawn background task to continue from interruption
-    background_tasks.add_task(
-        _resume_graph,
-        workflow_id=run_id
-    )
-
-    wf.status = WorkflowStatus.RUNNING
-    wf.updated_at = datetime.utcnow()
-    log.info("workflow.resumed", workflow_id=run_id)
-    return WorkflowResponse(**wf.model_dump())
-
-
-async def _resume_graph(workflow_id: str) -> None:
-    from graph import document_graph, NodeInterrupt
-    wf = _workflows[workflow_id]
-    config = {"configurable": {"thread_id": workflow_id}}
-    try:
-        result = await document_graph.ainvoke(None, config)
-
-        # LangGraph 1.1.6+: interrupt returns dict with '__interrupt__' key.
-        if isinstance(result, dict) and "__interrupt__" in result:
-            interrupts = result["__interrupt__"]
-            msg = str(interrupts[0].value) if interrupts else "HITL interrupt"
-            _handle_blocked(wf, workflow_id, msg, config)
-            return
-
-        cr = _state_get(result, "compliance_result")
-        audit_trail = _state_get(result, "audit_trail") or []
-        mapped_bboxes = map_fields_to_bboxes(
-            _state_get(result, "invoice"),
-            (_state_get(result, "invoice_bboxes") or []) + (_state_get(result, "bl_bboxes") or []),
+    snapshot = await document_graph.aget_state(config)
+    values = getattr(snapshot, "values", None)
+    if not values:
+        raise HTTPException(
+            status_code=status.HTTP_410_GONE,
+            detail="Paused graph state is no longer available — please start a new run",
         )
 
-        wf.status = WorkflowStatus.COMPLETED
-        wf.result = {
-            "declaration":       _state_get(result, "declaration"),
-            "summary":           _state_get(result, "summary", ""),
-            "compliance_status": cr.status if cr else None,
-            "compliance_issues": len(cr.issues) if cr else 0,
-            "audit_events":      len(audit_trail),
-            "bboxes":            [b.model_dump() for b in mapped_bboxes],
-        }
-        wf.steps = [
-            WorkflowStep(name=e.node_name, status=WorkflowStatus.COMPLETED)
-            for e in audit_trail
-        ]
-        log.info("workflow.completed", workflow_id=workflow_id)
+    invoice = _as_model(InvoiceDocument, values.get("invoice"))
+    bl = _as_model(BillOfLading, values.get("bill_of_lading"))
+    if body.gross_weight_kg is not None and bl is not None:
+        bl = bl.model_copy(update={"gross_weight_kg": body.gross_weight_kg})
+    if body.invoice_gross_weight_kg is not None and invoice is not None:
+        invoice = invoice.model_copy(update={"gross_weight_kg": body.invoice_gross_weight_kg})
 
-    except NodeInterrupt as exc:
-        _handle_blocked(wf, workflow_id, str(exc), config)
+    # Rebuild compliance for everything downstream of extraction: the weight
+    # check runs here, and writing the update "as" compliance_reason makes
+    # deterministic_validate and country_validate run again on the corrected
+    # data before the graph decides whether to block a second time.
+    cr = _as_model(ComplianceResult, values.get("compliance_result"))
+    compliance = _merge_issues(None, _carried_over_issues(cr) + weight_issues(invoice, bl))
 
-    except Exception as exc:
-        wf.status = WorkflowStatus.FAILED
-        wf.result = {"error": str(exc), "bboxes": []}
-        log.error("workflow.failed", workflow_id=workflow_id, error=str(exc))
+    await document_graph.aupdate_state(
+        config,
+        {"invoice": invoice, "bill_of_lading": bl, "compliance_result": compliance},
+        as_node="compliance_reason",
+    )
 
-    wf.updated_at = datetime.utcnow()
+    row = _save(run_id, WorkflowStatus.RUNNING) or row
+    background_tasks.add_task(_resume_graph, workflow_id=run_id)
+    log.info(
+        "workflow.resumed",
+        workflow_id=run_id,
+        bl_weight=body.gross_weight_kg,
+        invoice_weight=body.invoice_gross_weight_kg,
+    )
+    return WorkflowResponse(**_to_record(row).model_dump())
 
 
 @router.get(
     "/declaration/{run_id}",
     summary="Get final extracted declaration",
 )
-async def get_declaration(run_id: str) -> dict[str, Any]:
-    wf = _workflows.get(run_id)
-    if not wf:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found")
+async def get_declaration(run_id: str, user_id: str = Depends(get_current_user)) -> dict[str, Any]:
+    wf = _to_record(_get_owned(run_id, user_id))
     if wf.status != WorkflowStatus.COMPLETED:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Workflow is not complete yet")
-    
+
     decl = wf.result.get("declaration")
     if not decl:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Declaration not generated")
-    
+
     return decl

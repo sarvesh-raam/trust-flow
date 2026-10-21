@@ -1,4 +1,4 @@
-"""Hackstrom Track 3 — 11-node LangGraph document-processing pipeline.
+"""Hackstrom Track 3 — LangGraph document-processing pipeline.
 
 Topology:
 
@@ -14,20 +14,23 @@ Topology:
                                                                      compliance_reason
                                                                                  │
                                                                 deterministic_validate
+                                                                                 │
+                                                                     country_validate
                                                                 ┌────────────────┤
                                                            (BLOCK)          (no BLOCK)
-                                                                ▼                ▼
-                                                       interrupt_node    country_validate ◄─┘
-                                                                └────────────────┘
-                                                                                 │
+                                                                ▼                │
+                                                       interrupt_node            │
+                                                                └───────────────►┤
+                                                                                 ▼
                                                                    declaration_generate
                                                                                  │
                                                                         audit_trace ─► END
 
-HITL note: interrupt_node raises NodeInterrupt.  Callers should catch it,
-present state.compliance_result to the operator, then re-invoke with a
-corrected state (or abort).  Wire a SqliteSaver / RedisSaver checkpointer in
-production via compile_graph(checkpointer=...).
+HITL note: interrupt_node raises NodeInterrupt, which pauses the run at the
+last checkpoint.  routes/workflow.py applies the operator's corrections with
+update_state(as_node="compliance_reason") so both validate nodes re-run on the
+corrected data before the run continues.  main.py swaps in a SQLite
+checkpointer so paused runs survive a restart.
 """
 from __future__ import annotations
 
@@ -35,15 +38,15 @@ import asyncio
 import os
 import re
 import time
-import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
 import structlog
 import yaml
-from sqlmodel import Field as SQLField, Session, SQLModel, create_engine
+from sqlmodel import Field as SQLField, Session, SQLModel, delete
 
+from db import BACKEND_DIR, engine
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 
@@ -87,9 +90,28 @@ class AuditEventRow(SQLModel, table=True):
     latency_ms: float = 0.0
 
 
-_DB_URL = os.getenv("DATABASE_URL", "sqlite:///./hackstrom.db")
-_engine = create_engine(_DB_URL, echo=False, connect_args={"check_same_thread": False})
-SQLModel.metadata.create_all(_engine)
+def persist_audit_trail(run_id: str, events: list[AuditEvent]) -> int:
+    """Replace the stored audit rows for run_id with events.
+
+    Idempotent: called when a run pauses for HITL and again by audit_trace when
+    it finishes, without duplicating rows.
+    """
+    rows = [
+        AuditEventRow(
+            run_id=run_id,
+            timestamp=event.timestamp,
+            node_name=event.node_name,
+            input_summary=event.input_summary,
+            output_summary=event.output_summary,
+            latency_ms=event.latency_ms,
+        )
+        for event in events
+    ]
+    with Session(engine) as session:
+        session.exec(delete(AuditEventRow).where(AuditEventRow.run_id == run_id))
+        session.add_all(rows)
+        session.commit()
+    return len(rows)
 
 
 # ---------------------------------------------------------------------------
@@ -168,10 +190,14 @@ def _merge_issues(
     )
 
 
+def _rules_dir() -> Path:
+    """COUNTRY_RULES_DIR env var, else <repo>/country_rules (local dev layout)."""
+    env_dir = os.getenv("COUNTRY_RULES_DIR")
+    return Path(env_dir) if env_dir else BACKEND_DIR.parent / "country_rules"
+
+
 def _load_rules(country: str) -> dict[str, Any]:
-    rules_path = (
-        Path(__file__).parent.parent / "country_rules" / f"{country.lower()}.yaml"
-    )
+    rules_path = _rules_dir() / f"{country.lower()}.yaml"
     if rules_path.exists():
         return yaml.safe_load(rules_path.read_text(encoding="utf-8")) or {}
     log.warning("country_rules.missing", country=country, path=str(rules_path))
@@ -183,9 +209,13 @@ def _load_rules(country: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 async def ingest(state: GraphState) -> dict[str, Any]:
-    """Assign a fresh run_id and log document receipt."""
+    """Log document receipt.
+
+    The caller sets run_id to the workflow id, so the declaration, audit rows
+    and checkpoint thread can all be traced back to the same workflow.
+    """
     t0 = _now_ms()
-    run_id = uuid.uuid4()
+    run_id = state.run_id
     log.info(
         "ingest.start",
         run_id=str(run_id),
@@ -198,9 +228,9 @@ async def ingest(state: GraphState) -> dict[str, Any]:
         state,
         "ingest",
         input_summary=f"doc={state.document_id} country={state.country}",
-        output_summary=f"run_id={run_id} assigned",
+        output_summary=f"run_id={run_id} received",
         latency_ms=_elapsed(t0),
-        updates={"run_id": run_id},
+        updates={},
     )
 
 
@@ -303,10 +333,12 @@ async def ocr_extract(state: GraphState) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 async def vision_adjudication(state: GraphState) -> dict[str, Any]:
-    """Re-process a low-confidence scan with a multimodal vision model.
+    """Handle a low-confidence scan.
 
-    Stub: improves confidence and appends a correction notice.
-    TODO: call GPT-4o / Claude vision with the page image bytes.
+    No vision model is wired up yet, so this node does NOT alter the OCR text
+    or confidence.  It raises a WARN so the operator knows to check the
+    extracted fields against the source document.
+    TODO: send page images to a multimodal model and re-extract text + bboxes.
     """
     t0 = _now_ms()
     log.warning(
@@ -314,25 +346,23 @@ async def vision_adjudication(state: GraphState) -> dict[str, Any]:
         original_confidence=state.ocr_confidence,
     )
 
-    # TODO: encode page images as base64, send to GPT-4o / Claude vision,
-    # parse structured markdown response, re-extract bboxes from the response.
-    correction_tag = "\n[vision-adjudicated: low-confidence scan corrected]"
-    improved_invoice_text = (state.invoice_ocr_text or "") + correction_tag
-    improved_bl_text      = (state.bl_ocr_text      or "") + correction_tag
-    improved_confidence   = 0.82
-
-    log.info("vision_adjudication.done", new_confidence=improved_confidence)
+    issue = ComplianceIssue(
+        field="ocr_confidence",
+        message=(
+            f"Low OCR confidence ({state.ocr_confidence:.2f} < 0.70) and no vision "
+            f"fallback is configured — verify extracted fields against the documents"
+        ),
+        severity="warn",
+    )
     return _emit(
         state,
         "vision_adjudication",
         input_summary=f"confidence={state.ocr_confidence:.3f}",
-        output_summary=f"new_confidence={improved_confidence}",
+        output_summary="vision model not configured; flagged for manual review",
         latency_ms=_elapsed(t0),
         updates={
-            "invoice_ocr_text":      improved_invoice_text,
-            "bl_ocr_text":           improved_bl_text,
-            "ocr_confidence":        improved_confidence,
-            "needs_vision_fallback": False,   # resolved by this node
+            "compliance_result":     _merge_issues(state.compliance_result, [issue]),
+            "needs_vision_fallback": False,
         },
     )
 
@@ -375,36 +405,45 @@ async def field_extract(state: GraphState) -> dict[str, Any]:
 # Node 6 — reconcile
 # ---------------------------------------------------------------------------
 
-async def reconcile(state: GraphState) -> dict[str, Any]:
-    """Cross-check invoice vs B/L.  Adds WARN when gross weights diverge > 5 %."""
-    t0 = _now_ms()
-    new_issues: list[ComplianceIssue] = []
+WEIGHT_TOLERANCE_PCT = 5.0
 
+
+def weight_issues(
+    inv: InvoiceDocument | None, bl: BillOfLading | None
+) -> list[ComplianceIssue]:
+    """BLOCK when invoice and B/L gross weights diverge by more than 5 %.
+
+    Shared by reconcile and the HITL resume route, which re-runs it on the
+    operator's corrected values.
+    """
+    if not (inv and bl and inv.gross_weight_kg > 0 and bl.gross_weight_kg > 0):
+        return []
+    diff_pct = abs(inv.gross_weight_kg - bl.gross_weight_kg) / bl.gross_weight_kg * 100
+    if diff_pct <= WEIGHT_TOLERANCE_PCT:
+        return []
+    log.warning("reconcile.weight_mismatch", diff_pct=diff_pct)
+    return [
+        ComplianceIssue(
+            field="gross_weight_kg",
+            message=(
+                f"Invoice weight ({inv.gross_weight_kg} kg) differs from "
+                f"B/L weight ({bl.gross_weight_kg} kg) by {diff_pct:.1f}% "
+                f"(threshold {WEIGHT_TOLERANCE_PCT:g}%)"
+            ),
+            severity="block",
+        )
+    ]
+
+
+async def reconcile(state: GraphState) -> dict[str, Any]:
+    """Cross-check invoice vs B/L.  Adds a BLOCK when gross weights diverge > 5 %."""
+    t0 = _now_ms()
     inv = state.invoice
     bl = state.bill_of_lading
 
-    if inv and bl and inv.gross_weight_kg > 0 and bl.gross_weight_kg > 0:
-        diff_pct = (
-            abs(inv.gross_weight_kg - bl.gross_weight_kg) / bl.gross_weight_kg * 100
-        )
-        if diff_pct > 5.0:
-            new_issues.append(
-                ComplianceIssue(
-                    field="gross_weight_kg",
-                    message=(
-                        f"Invoice weight ({inv.gross_weight_kg} kg) differs from "
-                        f"B/L weight ({bl.gross_weight_kg} kg) by {diff_pct:.1f}% "
-                        f"(threshold 5%)"
-                    ),
-                    severity="block",
-                )
-            )
-            log.warning("reconcile.weight_mismatch", diff_pct=diff_pct)
-
+    new_issues = weight_issues(inv, bl)
     compliance = _merge_issues(state.compliance_result, new_issues)
-    summary = (
-        f"weight_diff_ok" if not new_issues else f"weight_warn diff={diff_pct:.1f}%"
-    )
+    summary = "weight_diff_ok" if not new_issues else "weight_mismatch"
     return _emit(
         state,
         "reconcile",
@@ -657,22 +696,14 @@ async def deterministic_validate(state: GraphState) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Node 10 — interrupt_node (HITL pause)
+# Node 11 — interrupt_node (HITL pause)
 # ---------------------------------------------------------------------------
 
 async def interrupt_node(state: GraphState) -> dict[str, Any]:
     """Pause execution for human-in-the-loop review of BLOCK-level findings.
 
-    Raises NodeInterrupt so the caller can inspect state.compliance_result,
-    resolve issues, and re-invoke the graph.
-
-    Production pattern:
-        try:
-            result = await graph.ainvoke(state, config)
-        except NodeInterrupt as e:
-            # present e.args[0] (message) + state to operator dashboard
-            # operator corrects, then:
-            result = await graph.ainvoke(corrected_state, config)
+    Raises NodeInterrupt; the run stays paused at its last checkpoint until
+    routes/workflow.py applies corrections and resumes it.
     """
     blocks = [
         i
@@ -680,7 +711,7 @@ async def interrupt_node(state: GraphState) -> dict[str, Any]:
         if i.severity == "block"
     ]
     if not blocks:
-        # All block issues resolved — continue to country_validate.
+        # All block issues resolved — continue to declaration_generate.
         log.info("interrupt_node.no_blocks", run_id=str(state.run_id))
         return {}
     msg = (
@@ -693,79 +724,121 @@ async def interrupt_node(state: GraphState) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Node 11 — country_validate
+# Node 10 — country_validate
 # ---------------------------------------------------------------------------
 
+def _is_empty(value: Any) -> bool:
+    return value is None or (isinstance(value, (str, list)) and not value) or (
+        isinstance(value, str) and not value.strip()
+    )
+
+
+def _field_value(state: GraphState, dotted: str) -> Any:
+    """Resolve 'invoice.currency' / 'bill_of_lading.vessel' against the state."""
+    obj: Any = state
+    for part in dotted.split("."):
+        if obj is None:
+            return None
+        obj = getattr(obj, part, None)
+    return obj
+
+
+def _hs_digits(code: str | None) -> str:
+    return re.sub(r"\D", "", code or "")
+
+
 async def country_validate(state: GraphState) -> dict[str, Any]:
-    """Load country_rules/<country>.yaml and apply jurisdiction-specific checks."""
+    """Apply the customs rules in country_rules/<country>.yaml.
+
+    Checks (all optional, driven by the YAML):
+      required_fields         — missing invoice / B/L fields
+      field_formats           — regex per dotted field path
+      line_items              — HS code present / minimum digits
+      value_thresholds        — e.g. US formal-entry threshold
+      restricted_hs_prefixes  — goods needing a permit / licence
+    Fields already flagged by deterministic_validate are not flagged twice.
+    required_screenings are informational and go into the declaration only.
+    """
     t0 = _now_ms()
     rules = _load_rules(state.country)
     new_issues: list[ComplianceIssue] = []
     inv = state.invoice
+    tag = f"[{state.country.upper()}]"
 
     if not rules:
-        compliance = _merge_issues(state.compliance_result, [])
         return _emit(
             state,
             "country_validate",
             input_summary=f"country={state.country}",
-            output_summary="no rules file found, skipped",
+            output_summary=f"no rules file in {_rules_dir()}, skipped",
             latency_ms=_elapsed(t0),
-            updates={"compliance_result": compliance},
+            updates={},
         )
 
-    # ── Seller / buyer name required ─────────────────────────────────────────
-    legal_name_required = "legal_name" in (rules.get("required_fields") or [])
-    if legal_name_required and inv:
-        if not inv.seller.strip():
-            new_issues.append(
-                ComplianceIssue(
-                    field="invoice.seller",
-                    message=f"[{state.country.upper()}] Legal name (seller) is required",
-                    severity="block",
-                )
-            )
-        if not inv.buyer.strip():
-            new_issues.append(
-                ComplianceIssue(
-                    field="invoice.buyer",
-                    message=f"[{state.country.upper()}] Legal name (buyer) is required",
-                    severity="block",
-                )
-            )
+    flagged = {i.field for i in (state.compliance_result.issues if state.compliance_result else [])}
 
-    # ── Date format ───────────────────────────────────────────────────────────
-    date_fmt_rule = (rules.get("field_formats") or {}).get("date_of_birth", {})
-    date_pattern = date_fmt_rule.get("pattern", "")
-    if date_pattern and inv and not re.match(date_pattern, inv.date):
+    def add(field: str, message: str, severity: str) -> None:
+        if field in flagged:
+            return
+        flagged.add(field)
         new_issues.append(
-            ComplianceIssue(
-                field="invoice.date",
-                message=(
-                    f"[{state.country.upper()}] Date '{inv.date}' does not match "
-                    f"required pattern '{date_pattern}'"
-                ),
-                severity="warn",
-            )
+            ComplianceIssue(field=field, message=f"{tag} {message}", severity=severity)  # type: ignore[arg-type]
         )
 
-    # ── Compliance screening flags ────────────────────────────────────────────
-    compliance_cfg = rules.get("compliance") or {}
-    screening_labels = {
-        "kyc_required": "KYC",
-        "aml_check": "AML",
-        "ofac_screening": "OFAC",
-        "cbuae_screening": "CBUAE",
-    }
-    for key, label in screening_labels.items():
-        if compliance_cfg.get(key):
-            new_issues.append(
-                ComplianceIssue(
-                    field="compliance",
-                    message=f"[{state.country.upper()}] {label} screening required per jurisdiction rules",
-                    severity="warn",
-                )
+    # ── Required fields ──────────────────────────────────────────────────────
+    req = rules.get("required_fields") or {}
+    req_severity = req.get("severity", "warn")
+    for doc_key in ("invoice", "bill_of_lading"):
+        if getattr(state, doc_key) is None:
+            continue  # deterministic_validate already blocked the missing document
+        for name in req.get(doc_key) or []:
+            if _is_empty(_field_value(state, f"{doc_key}.{name}")):
+                add(f"{doc_key}.{name}", f"{doc_key}.{name} is required", req_severity)
+
+    # ── Field formats ────────────────────────────────────────────────────────
+    for path, spec in (rules.get("field_formats") or {}).items():
+        value = _field_value(state, path)
+        pattern = spec.get("pattern", "")
+        if pattern and not _is_empty(value) and not re.match(pattern, str(value)):
+            add(
+                path,
+                f"'{value}' does not match {spec.get('description') or pattern}",
+                spec.get("severity", "warn"),
             )
+
+    line_items = inv.line_items if inv else []
+
+    # ── Line-item HS code requirements ───────────────────────────────────────
+    li_rules = rules.get("line_items") or {}
+    min_digits = int(li_rules.get("hs_code_min_digits") or 0)
+    for idx, li in enumerate(line_items):
+        field = f"line_items.{idx}.hs_code"
+        digits = _hs_digits(li.hs_code)
+        if li_rules.get("require_hs_code") and not digits:
+            add(field, f"No HS code assigned to '{li.description[:50]}'", "warn")
+        elif min_digits and digits and len(digits) < min_digits:
+            add(field, f"HS code {li.hs_code} has fewer than {min_digits} digits", "warn")
+
+    # ── Value thresholds ─────────────────────────────────────────────────────
+    for rule in rules.get("value_thresholds") or []:
+        value = _field_value(state, rule.get("field", ""))
+        currency = rule.get("currency")
+        if not isinstance(value, (int, float)) or (currency and inv and inv.currency != currency):
+            continue
+        if value > float(rule.get("above", float("inf"))):
+            add(rule["field"], rule.get("message", "value threshold exceeded"), rule.get("severity", "warn"))
+
+    # ── Restricted goods ─────────────────────────────────────────────────────
+    for idx, li in enumerate(line_items):
+        digits = _hs_digits(li.hs_code)
+        for rule in rules.get("restricted_hs_prefixes") or []:
+            if digits and digits.startswith(str(rule.get("prefix", "_"))):
+                add(
+                    f"line_items.{idx}.hs_code",
+                    f"{li.hs_code}: {rule.get('message', 'restricted goods')}",
+                    rule.get("severity", "warn"),
+                )
+                break
 
     compliance = _merge_issues(state.compliance_result, new_issues)
     log.info(
@@ -802,6 +875,7 @@ async def declaration_generate(state: GraphState) -> dict[str, Any]:
         "invoice": inv.model_dump() if inv else None,
         "bill_of_lading": bl.model_dump() if bl else None,
         "compliance": cr.model_dump() if cr else None,
+        "required_screenings": _load_rules(state.country).get("required_screenings") or [],
         "hs_codes": (
             [
                 {"description": li.description, "hs_code": li.hs_code}
@@ -846,28 +920,14 @@ async def audit_trace(state: GraphState) -> dict[str, Any]:
     t0 = _now_ms()
     run_id_str = str(state.run_id)
 
-    rows = [
-        AuditEventRow(
-            run_id=run_id_str,
-            timestamp=event.timestamp,
-            node_name=event.node_name,
-            input_summary=event.input_summary,
-            output_summary=event.output_summary,
-            latency_ms=event.latency_ms,
-        )
-        for event in state.audit_trail
-    ]
+    persisted = persist_audit_trail(run_id_str, state.audit_trail)
 
-    with Session(_engine) as session:
-        session.add_all(rows)
-        session.commit()
-
-    log.info("audit_trace.done", run_id=run_id_str, events_persisted=len(rows))
+    log.info("audit_trace.done", run_id=run_id_str, events_persisted=persisted)
     return _emit(
         state,
         "audit_trace",
         input_summary=f"events={len(state.audit_trail)}",
-        output_summary=f"persisted={len(rows)} rows to {_DB_URL}",
+        output_summary=f"persisted={persisted} rows",
         latency_ms=_elapsed(t0),
         updates={},
     )
@@ -885,13 +945,13 @@ def _route_ocr(state: GraphState) -> str:
     return "field_extract"
 
 
-def _route_deterministic(state: GraphState) -> str:
-    """After deterministic_validate: any BLOCK → interrupt_node, else → country_validate."""
+def _route_validation(state: GraphState) -> str:
+    """After country_validate: any BLOCK → interrupt_node, else → declaration_generate."""
     cr = state.compliance_result
     if cr and any(i.severity == "block" for i in cr.issues):
         log.warning("routing.block_found", issues=[i.field for i in cr.issues if i.severity == "block"])
         return "interrupt_node"
-    return "country_validate"
+    return "declaration_generate"
 
 
 # ---------------------------------------------------------------------------
@@ -899,12 +959,12 @@ def _route_deterministic(state: GraphState) -> str:
 # ---------------------------------------------------------------------------
 
 def compile_graph(**compile_kwargs: Any) -> Any:
-    """Build and compile the 11-node document-processing StateGraph.
+    """Build and compile the document-processing StateGraph.
 
     Args:
         **compile_kwargs: forwarded directly to builder.compile().
-            Pass checkpointer=SqliteSaver(...) in production to enable
-            durable HITL resume after interrupt_node.
+            Defaults to an in-memory checkpointer; main.py replaces it with
+            AsyncSqliteSaver at startup for durable HITL resume.
 
     Returns:
         A compiled LangGraph runnable (supports .invoke / .ainvoke).
@@ -947,9 +1007,9 @@ def compile_graph(**compile_kwargs: Any) -> Any:
     builder.add_edge("reconcile",         "hs_retrieve")
     builder.add_edge("hs_retrieve",       "compliance_reason")
     builder.add_edge("compliance_reason", "deterministic_validate")
-    # deterministic_validate → conditional (see below)
-    builder.add_edge("interrupt_node",    "country_validate")
-    builder.add_edge("country_validate",  "declaration_generate")
+    builder.add_edge("deterministic_validate", "country_validate")
+    # country_validate → conditional (see below)
+    builder.add_edge("interrupt_node",    "declaration_generate")
     builder.add_edge("declaration_generate", "audit_trace")
     builder.add_edge("audit_trace",       END)
 
@@ -960,9 +1020,9 @@ def compile_graph(**compile_kwargs: Any) -> Any:
         {"vision_adjudication": "vision_adjudication", "field_extract": "field_extract"},
     )
     builder.add_conditional_edges(
-        "deterministic_validate",
-        _route_deterministic,
-        {"interrupt_node": "interrupt_node", "country_validate": "country_validate"},
+        "country_validate",
+        _route_validation,
+        {"interrupt_node": "interrupt_node", "declaration_generate": "declaration_generate"},
     )
 
     if "checkpointer" not in compile_kwargs:

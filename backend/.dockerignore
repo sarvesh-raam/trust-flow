@@ -7,3 +7,4 @@ uploads/
 .venv
 venv
 .pytest_cache
+tests/

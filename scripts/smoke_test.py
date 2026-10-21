@@ -6,7 +6,26 @@ import shutil
 import json
 from pathlib import Path
 
+import jwt
+import os
+from datetime import datetime, timedelta
+from dotenv import load_dotenv
+
+load_dotenv()
+
 BASE_URL = "http://localhost:8000/api/v1"
+SECRET_KEY = os.getenv("JWT_SECRET_KEY", "hackstrom-secret-change-in-prod")  # must match the backend
+
+def get_auth_headers():
+    token = jwt.encode({
+        "sub": "smoke_test_user",
+        "email": "test@example.com",
+        "type": "access",
+        "exp": datetime.utcnow() + timedelta(minutes=30),
+        "iat": datetime.utcnow()
+    }, SECRET_KEY, algorithm="HS256")
+    return {"Authorization": f"Bearer {token}"}
+
 TEST_DOCS = Path(__file__).parent.parent / "test_docs" / "weight_conflict_set"
 UPLOADS_DIR = Path(__file__).parent.parent / "backend" / "uploads"
 
@@ -19,21 +38,25 @@ def main():
         print("Test documents missing! Run scripts/generate_test_docs.py first.")
         sys.exit(1)
         
-    with open(invoice_path, "rb") as f:
-        resp = httpx.post(f"{BASE_URL}/upload/", files={"file": ("invoice.pdf", f, "application/pdf")})
+    with open(invoice_path, "rb") as f1, open(bl_path, "rb") as f2:
+        files = {
+            "invoice_pdf": ("invoice.pdf", f1, "application/pdf"),
+            "bl_pdf": ("bl.pdf", f2, "application/pdf")
+        }
+        data = {"country": "us"}
+        resp = httpx.post(
+            f"{BASE_URL}/upload/", 
+            files=files, 
+            data=data,
+            headers=get_auth_headers()
+        )
         resp.raise_for_status()
         doc_id = resp.json()["id"]
-        
-    with open(bl_path, "rb") as f:
-        httpx.post(f"{BASE_URL}/upload/", files={"file": ("bl.pdf", f, "application/pdf")})
-    
-    if UPLOADS_DIR.exists():
-        shutil.copy(bl_path, UPLOADS_DIR / f"{doc_id}_bl.pdf")
         
     print(f"Uploaded. Document ID: {doc_id}")
 
     print("\n--- 2. Triggering Workflow ---")
-    resp = httpx.post(f"{BASE_URL}/workflow/", json={"document_id": doc_id, "country": "us"})
+    resp = httpx.post(f"{BASE_URL}/workflow/", json={"document_id": doc_id, "country": "us"}, headers=get_auth_headers())
     resp.raise_for_status()
     run_id = resp.json()["id"]
     print(f"Workflow Run ID: {run_id}")
@@ -43,7 +66,7 @@ def main():
     issues = []
     
     for _ in range(30):
-        resp = httpx.get(f"{BASE_URL}/workflow/status/{run_id}")
+        resp = httpx.get(f"{BASE_URL}/workflow/status/{run_id}", headers=get_auth_headers())
         resp.raise_for_status()
         data = resp.json()
         status = data["status"]
@@ -68,13 +91,13 @@ def main():
     print("Assertion passed: Pipeline correctly halted on weight discrepancy.")
 
     print("\n--- 5. Resuming Workflow via HITL Override ---")
-    resp = httpx.post(f"{BASE_URL}/workflow/resume/{run_id}", json={"gross_weight_kg": 860.0})
+    resp = httpx.post(f"{BASE_URL}/workflow/resume/{run_id}", json={"gross_weight_kg": 860.0}, headers=get_auth_headers())
     resp.raise_for_status()
     print("Resume packet sent.")
 
     print("\n--- 6. Polling for PASS / COMPLETED ---")
     for _ in range(30):
-        resp = httpx.get(f"{BASE_URL}/workflow/status/{run_id}")
+        resp = httpx.get(f"{BASE_URL}/workflow/status/{run_id}", headers=get_auth_headers())
         resp.raise_for_status()
         data = resp.json()
         status = data["status"]
@@ -88,7 +111,7 @@ def main():
     print(f"Status: {status}")
 
     print("\n--- 7. Fetching Final Declaration ---")
-    resp = httpx.get(f"{BASE_URL}/workflow/declaration/{run_id}")
+    resp = httpx.get(f"{BASE_URL}/workflow/declaration/{run_id}", headers=get_auth_headers())
     resp.raise_for_status()
     decl = resp.json()
     print("Declaration fetched.")
@@ -99,7 +122,7 @@ def main():
     print("Assertion passed: Declaration features line item hs_codes.")
 
     print("\n--- 8. Audit Trail output ---")
-    resp = httpx.get(f"{BASE_URL}/workflow/{run_id}")
+    resp = httpx.get(f"{BASE_URL}/workflow/{run_id}", headers=get_auth_headers())
     resp.raise_for_status()
     steps = resp.json().get("steps", [])
     print(json.dumps(steps, indent=2))

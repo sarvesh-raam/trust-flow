@@ -1,7 +1,7 @@
 """nodes/field_extract.py — LLM-based structured extraction via Instructor.
 
 Uses Groq (llama-3.3-70b) when GROQ_API_KEY is set, otherwise falls back to a
-locally-hosted vLLM server (Qwen2.5-7B-Instruct at http://localhost:8000/v1).
+locally-hosted vLLM server (Qwen2.5-7B-Instruct at http://localhost:8001/v1).
 
 The Instructor library wraps the OpenAI-compatible chat endpoint and retries
 automatically until the response validates against the Pydantic response_model
@@ -135,18 +135,31 @@ def field_extract_node(state: WorkflowState) -> WorkflowState:
     simpler to test and because graph.py already wraps every sync node with
     asyncio.get_event_loop().run_in_executor(), keeping the event loop free.
 
+    A document with no OCR text is skipped (left as None) rather than sent to
+    the LLM, which would otherwise invent plausible-looking values;
+    deterministic_validate then blocks the run for that missing document.
+
     Raises:
         instructor.exceptions.InstructorRetryException: when the LLM fails to
-            produce a valid schema after max_retries attempts. graph.py catches
-            this and marks the run as failed.
+            produce a valid schema after max_retries attempts. The workflow
+            route catches this and marks the run as failed.
     """
     client = get_client()
     model  = _active_model()
     max_retries = 3
 
-    # ── Invoice ──────────────────────────────────────────────────────────────
     inv_text   = state.invoice_ocr_text or ""
-    inv_tables = _format_tables(state.invoice_tables)
+    bl_text    = state.bl_ocr_text or ""
+    state.invoice = _extract_invoice(client, model, inv_text, state.invoice_tables, max_retries) if inv_text.strip() else None
+    state.bill_of_lading = _extract_bl(client, model, bl_text, state.bl_tables, max_retries) if bl_text.strip() else None
+    for label, text in (("invoice", inv_text), ("bl", bl_text)):
+        if not text.strip():
+            log.warning("field_extract.skipped_empty_ocr", doc_type=label)
+    return state
+
+
+def _extract_invoice(client: Any, model: str, inv_text: str, tables: list[Any] | None, max_retries: int) -> InvoiceDocument:
+    inv_tables = _format_tables(tables)
 
     log.info(
         "field_extract.invoice_start",
@@ -173,9 +186,11 @@ def field_extract_node(state: WorkflowState) -> WorkflowState:
         total_amount=invoice.total_amount,
     )
 
-    # ── Bill of Lading ────────────────────────────────────────────────────────
-    bl_text   = state.bl_ocr_text or ""
-    bl_tables = _format_tables(state.bl_tables)
+    return invoice
+
+
+def _extract_bl(client: Any, model: str, bl_text: str, tables: list[Any] | None, max_retries: int) -> BillOfLading:
+    bl_tables = _format_tables(tables)
 
     log.info(
         "field_extract.bl_start",
@@ -201,6 +216,4 @@ def field_extract_node(state: WorkflowState) -> WorkflowState:
         line_items=len(bill_of_lading.line_items),
     )
 
-    state.invoice        = invoice
-    state.bill_of_lading = bill_of_lading
-    return state
+    return bill_of_lading

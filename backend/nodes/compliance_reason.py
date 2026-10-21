@@ -161,8 +161,9 @@ def compliance_reason_node(state: WorkflowState) -> WorkflowState:
                 break
 
         if not matched:
-            # LLM selected a code not in the candidate list — log and continue.
-            # The hs_code is still set; the graph wrapper can add a WARN issue.
+            # LLM selected a code not in the candidate list — keep it, but flag
+            # it so the graph wrapper raises a WARN for human review.
+            sel.flag_for_review = True
             log.warning(
                 "compliance_reason.code_not_in_candidates",
                 index=sel.line_item_index,

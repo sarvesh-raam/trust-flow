@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
-import { api } from "../lib/api";
+import { exchangeFirebaseToken as exchange } from "../lib/api";
 import { auth, onAuthStateChanged, type User } from "../lib/firebase";
 
 interface AuthContextType {
@@ -9,14 +9,16 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType>({ user: null, loading: true });
 
+// Backend access tokens last 30 min; refresh well before they expire.
+// (The API client also re-exchanges on any 401 as a backstop.)
+const TOKEN_REFRESH_MS = 25 * 60 * 1000;
+
 async function exchangeFirebaseToken(u: User): Promise<void> {
   try {
-    const idToken = await u.getIdToken(/* forceRefresh */ false);
-    const { data } = await api.post("/auth/google", { firebase_token: idToken });
-    localStorage.setItem("access_token", data.access_token);
+    await exchange(u);
   } catch (err) {
-    // Backend exchange failed — clear stale token but keep Firebase user in context.
-    // The UI is still protected by Firebase auth; backend routes are unprotected for hackathon.
+    // Backend exchange failed — clear the stale token but keep the Firebase user
+    // in context; the API client retries the exchange on the next 401.
     console.warn("[AuthContext] Backend JWT exchange failed (backend may be starting):", err);
     localStorage.removeItem("access_token");
   }
@@ -41,12 +43,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return unsubscribe;
   }, []);
 
-  // Auto-refresh backend JWT when Firebase token renews (every ~55 min)
+  // Refresh the backend JWT before its 30-minute expiry.
   useEffect(() => {
     if (!user) return;
     const interval = setInterval(async () => {
       await exchangeFirebaseToken(user);
-    }, 55 * 60 * 1000);
+    }, TOKEN_REFRESH_MS);
     return () => clearInterval(interval);
   }, [user]);
 

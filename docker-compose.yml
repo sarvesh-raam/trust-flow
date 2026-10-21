@@ -8,12 +8,16 @@ services:
       - GROQ_API_KEY=${GROQ_API_KEY}
       - GROQ_MODEL=${GROQ_MODEL:-llama-3.3-70b-versatile}
       - DATABASE_URL=sqlite:///./data/hackstrom.db
-      - UPLOAD_DIR=uploads
-      - REDIS_URL=redis://redis:6379/0
-      - LOKI_URL=http://loki:3100/loki/api/v1/push
+      - CHECKPOINT_DB=/app/data/checkpoints.db
+      - UPLOAD_DIR=/app/uploads
+      - COUNTRY_RULES_DIR=/app/country_rules
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:?set JWT_SECRET_KEY in .env}
+      - FIREBASE_PROJECT_ID=${FIREBASE_PROJECT_ID:-trustflow-45bec}
+      - CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
     volumes:
       - uploads_data:/app/uploads
       - db_data:/app/data
+      - ./country_rules:/app/country_rules:ro
     restart: unless-stopped
 
   frontend:
@@ -23,64 +27,6 @@ services:
       - "3000:80"
     depends_on:
       - backend
-    restart: unless-stopped
-
-  redis:
-    image: redis:7-alpine
-    container_name: hackstrom_redis
-    ports:
-      - "6379:6379"
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
-  worker1:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile.worker
-    container_name: hackstrom_worker_1
-    environment:
-      - GROQ_API_KEY=${GROQ_API_KEY}
-      - REDIS_URL=redis://redis:6379/0
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
-      - LOKI_URL=http://loki:3100/loki/api/v1/push
-    volumes:
-      - uploads_data:/app/uploads
-      - tmp_data:/tmp
-    depends_on:
-      redis:
-        condition: service_healthy
-    restart: unless-stopped
-
-  worker2:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile.worker
-    container_name: hackstrom_worker_2
-    environment:
-      - GROQ_API_KEY=${GROQ_API_KEY}
-      - REDIS_URL=redis://redis:6379/0
-      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
-      - LOKI_URL=http://loki:3100/loki/api/v1/push
-    volumes:
-      - uploads_data:/app/uploads
-      - tmp_data:/tmp
-    depends_on:
-      redis:
-        condition: service_healthy
-    restart: unless-stopped
-
-  flower:
-    image: mher/flower:2.0
-    container_name: hackstrom_flower
-    command: celery --broker=redis://redis:6379/0 flower --port=5555
-    ports:
-      - "5555:5555"
-    depends_on:
-      - redis
     restart: unless-stopped
 
   loki:
@@ -97,9 +43,8 @@ services:
     ports:
       - "3001:3000"
     environment:
-      - GF_SECURITY_ADMIN_PASSWORD=hackstrom2026
-      - GF_AUTH_ANONYMOUS_ENABLED=true
-      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}
+      - GF_AUTH_ANONYMOUS_ENABLED=false
       - GF_PATHS_PROVISIONING=/etc/grafana/provisioning
     volumes:
       - grafana_data:/var/lib/grafana
@@ -112,5 +57,4 @@ services:
 volumes:
   uploads_data:
   db_data:
-  tmp_data:
   grafana_data:

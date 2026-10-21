@@ -143,15 +143,19 @@ class InvoiceDocument(BaseModel):
     """Structured representation of a commercial invoice."""
 
     invoice_number: str = Field(
+        default="",
         description="Unique invoice reference number as printed on the document"
     )
     date: str = Field(
+        default="",
         description="Invoice date in ISO-8601 format (YYYY-MM-DD)"
     )
     seller: str = Field(
+        default="",
         description="Legal name of the selling entity"
     )
     buyer: str = Field(
+        default="",
         description="Legal name of the buying / consignee entity"
     )
     line_items: list[LineItem] = Field(
@@ -178,15 +182,19 @@ class BillOfLading(BaseModel):
     """Structured representation of an ocean or air bill of lading."""
 
     bl_number: str = Field(
+        default="",
         description="Unique bill of lading reference number"
     )
     vessel: str = Field(
+        default="",
         description="Name of the carrying vessel or flight number"
     )
     port_of_loading: str = Field(
+        default="",
         description="UN/LOCODE or plain-text name of the port of loading"
     )
     port_of_discharge: str = Field(
+        default="",
         description="UN/LOCODE or plain-text name of the port of discharge"
     )
     gross_weight_kg: float = Field(
@@ -195,9 +203,11 @@ class BillOfLading(BaseModel):
         description="Total gross weight declared on the B/L in kilograms",
     )
     consignee: str = Field(
+        default="",
         description="Legal name of the consignee (receiving party)"
     )
     shipper: str = Field(
+        default="",
         description="Legal name of the shipper (sending party)"
     )
     line_items: list[LineItem] = Field(
@@ -313,7 +323,18 @@ class WorkflowCreateRequest(BaseModel):
 
 
 class ResumeRequest(BaseModel):
-    gross_weight_kg: float | None = None
+    """Operator corrections submitted when resuming a BLOCKED (HITL) run.
+
+    Values are re-validated after they are applied, so a correction that still
+    conflicts with the other document blocks the run again.
+    """
+
+    gross_weight_kg: float | None = Field(
+        default=None, gt=0, description="Corrected B/L gross weight in kg"
+    )
+    invoice_gross_weight_kg: float | None = Field(
+        default=None, gt=0, description="Corrected invoice gross weight in kg"
+    )
 
 
 class WorkflowResponse(WorkflowRecord):

@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
 import { useQuery } from "@tanstack/react-query";
-import { getRunStatus, type BBoxEntry } from "@/lib/api";
+import { authHeaders, getRunStatus, resolveApiUrl, type BBoxEntry } from "@/lib/api";
 import { getPDF, storePDF, clearPDF } from "@/lib/pdfStore";
 
 // Configure pdf.js worker (Vite resolves the URL at build time).
@@ -141,13 +141,15 @@ export default function PDFViewerPanel({
     pdfUrl = getPDF(runId, source);
   }
 
-  // Ensure /uploads/... URLs resolve against the backend (port 8000), not Vite (port 3000).
-  if (pdfUrl && pdfUrl.startsWith("/uploads/")) {
-    const backendBase = import.meta.env.VITE_API_BASE
-      ? import.meta.env.VITE_API_BASE.replace("/api/v1", "")
-      : "http://localhost:8000";
-    pdfUrl = `${backendBase}${pdfUrl}`;
-  }
+  // Backend file URLs ("/api/v1/upload/…/file/…") are owner-only, so resolve them
+  // against the API host and send the bearer token. Memoised: react-pdf reloads
+  // the document whenever the `file` object identity changes.
+  const isApiFile = !!pdfUrl && pdfUrl.startsWith("/api/v1/");
+  const pdfFile = useMemo(
+    () => (pdfUrl && isApiFile ? { url: resolveApiUrl(pdfUrl), httpHeaders: authHeaders() } : pdfUrl),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [pdfUrl],
+  );
 
   if (!pdfUrl) {
     return (
@@ -300,7 +302,7 @@ export default function PDFViewerPanel({
       >
         <Document
           key={storedPdfKey}
-          file={pdfUrl}
+          file={pdfFile}
           onLoadSuccess={({ numPages: n }) => {
             setNumPages(n);
             setPageNumber(1);

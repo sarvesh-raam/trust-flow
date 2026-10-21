@@ -1,44 +1,47 @@
-# United States — Document Validation Rules
-# Applied during the `validate` node in the LangGraph pipeline.
+# United States — import customs declaration rules
+# Applied by the `country_validate` node (backend/graph.py).
+#
+# Starting-point rules for the demo. Verify against current CBP guidance or
+# with a licensed customs broker before relying on them for real filings.
 
 jurisdiction: US
-version: "1.0.0"
+version: "2.0.0"
+authority: "U.S. Customs and Border Protection (CBP)"
 
+# Fields that must be present on the extracted documents.
 required_fields:
-  - ssn_or_ein          # Social Security Number or Employer Identification Number
-  - legal_name
-  - address
-  - date_of_birth
-  - document_type
+  severity: warn
+  invoice: [invoice_number, date, seller, buyer, currency, line_items]
+  bill_of_lading: [bl_number, vessel, port_of_loading, port_of_discharge, consignee, shipper]
 
+# Regex checks keyed by dotted field path.
 field_formats:
-  ssn_or_ein:
-    pattern: "^(\\d{3}-\\d{2}-\\d{4}|\\d{2}-\\d{7})$"
-    description: "SSN (XXX-XX-XXXX) or EIN (XX-XXXXXXX)"
-  date_of_birth:
-    pattern: "^\\d{4}-\\d{2}-\\d{2}$"
-    format: "YYYY-MM-DD"
+  invoice.currency:
+    pattern: "^[A-Z]{3}$"
+    description: "a 3-letter ISO-4217 currency code"
+    severity: warn
 
-age_requirements:
-  minimum_age: 18
+line_items:
+  require_hs_code: true
+  hs_code_min_digits: 10        # HTSUS statistical reporting number
 
-document_types:
-  accepted:
-    - passport
-    - drivers_license
-    - state_id
-    - military_id
+value_thresholds:
+  - field: invoice.total_amount
+    currency: USD
+    above: 2500
+    severity: warn
+    message: "Value over USD 2,500 — formal entry (CBP Form 7501) and a customs bond are required"
 
-address_rules:
-  require_state: true
-  require_zip: true
-  zip_pattern: "^\\d{5}(-\\d{4})?$"
+# Goods that need an agency permit or licence (matched on HS code prefix).
+restricted_hs_prefixes:
+  - prefix: "93"
+    severity: warn
+    message: "Arms and ammunition (HTS ch. 93) — ATF import permit required"
+  - prefix: "2402"
+    severity: warn
+    message: "Cigars / cigarettes — TTB importer permit and excise requirements apply"
 
-compliance:
-  kyc_required: true
-  aml_check: true
-  ofac_screening: true
-
-retention_policy:
-  years: 7
-  regulation: "BSA/AML"
+# Informational only — listed on the declaration, never raised as issues.
+required_screenings:
+  - "Denied-party screening of seller and buyer (OFAC SDN, BIS Entity List)"
+  - "ISF (10+2) filed at least 24 hours before loading for ocean shipments"

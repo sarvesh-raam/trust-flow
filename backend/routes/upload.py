@@ -1,19 +1,21 @@
 """Upload routes — accept a matched invoice + bill-of-lading PDF pair."""
 from __future__ import annotations
 
+import mimetypes
+import os
 import uuid
 from pathlib import Path
 
 import aiofiles
 import structlog
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi.responses import FileResponse
 from sqlmodel import Session, select
 
-from workflow_db import db
-from db import UploadRunRow, engine
+from db import UPLOAD_DIR, UploadRunRow, engine
+from dependencies import get_current_user
 from models import (
     CountryCode,
-    DocumentRecord,
     DocumentResponse,
     DocumentStatus,
 )
@@ -22,18 +24,53 @@ log = structlog.get_logger(__name__)
 
 router = APIRouter()
 
-UPLOAD_DIR = Path("uploads")
-UPLOAD_DIR.mkdir(exist_ok=True)
+MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_MB", "25")) * 1024 * 1024
 
-ALLOWED_CONTENT_TYPES = {
-    "application/pdf",
-    "image/png",
-    "image/jpeg",
-    "image/tiff",
-    # Windows sometimes sends these for PDFs
-    "application/octet-stream",
-    "application/x-pdf",
-}
+# Detected from the file's leading bytes — the browser's content type is not trusted.
+_MAGIC: list[tuple[bytes, str]] = [
+    (b"%PDF-", ".pdf"),
+    (b"\x89PNG\r\n\x1a\n", ".png"),
+    (b"\xff\xd8\xff", ".jpg"),
+    (b"II*\x00", ".tif"),
+    (b"MM\x00*", ".tif"),
+]
+
+
+def _detect_extension(head: bytes) -> str | None:
+    for magic, ext in _MAGIC:
+        if head.startswith(magic):
+            return ext
+    return None
+
+
+async def _read_limited(upload: UploadFile, label: str) -> bytes:
+    content = await upload.read(MAX_UPLOAD_BYTES + 1)
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"{label}: file exceeds {MAX_UPLOAD_BYTES // (1024 * 1024)} MB",
+        )
+    if not content:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"{label}: file is empty")
+    return content
+
+
+def _get_owned_row(session: Session, run_id: str, user_id: str) -> UploadRunRow:
+    row = session.get(UploadRunRow, run_id)
+    # 404 (not 403) so other users' run ids are not confirmed to exist.
+    if not row or row.user_id != user_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Upload not found")
+    return row
+
+
+def _to_response(row: UploadRunRow, filename: str = "invoice + bl") -> DocumentResponse:
+    return DocumentResponse(
+        id=uuid.UUID(row.run_id),
+        filename=filename,
+        country=CountryCode(row.country),
+        status=DocumentStatus.PENDING,
+        metadata={"run_id": row.run_id},
+    )
 
 
 @router.post(
@@ -46,29 +83,29 @@ async def upload_documents(
     invoice_pdf: UploadFile = File(..., description="Commercial invoice (PDF or image)"),
     bl_pdf: UploadFile = File(..., description="Bill of lading (PDF or image)"),
     country: CountryCode = Form(CountryCode.US, description="Jurisdiction for rule validation"),
+    user_id: str = Depends(get_current_user),
 ) -> DocumentResponse:
     """Accept both trade documents in a single multipart request.
 
-    Saves them as  uploads/{run_id}_invoice.pdf  and  uploads/{run_id}_bl.pdf
-    then writes an UploadRunRow to SQLite so the workflow route can look up the
-    exact paths without relying on filename conventions.
+    Saves each file as uploads/<run_id>_<invoice|bl>.<ext>, then writes an
+    UploadRunRow so the workflow route can look up the exact paths.
     """
-    # Validate content types (be lenient — browsers vary)
-    for upload, label in [(invoice_pdf, "invoice_pdf"), (bl_pdf, "bl_pdf")]:
-        ct = upload.content_type or ""
-        if ct and ct not in ALLOWED_CONTENT_TYPES:
+    inv_content = await _read_limited(invoice_pdf, "invoice_pdf")
+    bl_content  = await _read_limited(bl_pdf, "bl_pdf")
+
+    inv_ext = _detect_extension(inv_content[:8])
+    bl_ext  = _detect_extension(bl_content[:8])
+    for ext, label in [(inv_ext, "invoice_pdf"), (bl_ext, "bl_pdf")]:
+        if ext is None:
             raise HTTPException(
                 status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-                detail=f"{label}: unsupported content type '{ct}'",
+                detail=f"{label}: must be a PDF, PNG, JPEG or TIFF file",
             )
 
     run_id = str(uuid.uuid4())
 
-    inv_dest = UPLOAD_DIR / f"{run_id}_invoice.pdf"
-    bl_dest  = UPLOAD_DIR / f"{run_id}_bl.pdf"
-
-    inv_content = await invoice_pdf.read()
-    bl_content  = await bl_pdf.read()
+    inv_dest = UPLOAD_DIR / f"{run_id}_invoice{inv_ext}"
+    bl_dest  = UPLOAD_DIR / f"{run_id}_bl{bl_ext}"
 
     async with aiofiles.open(inv_dest, "wb") as fh:
         await fh.write(inv_content)
@@ -77,10 +114,10 @@ async def upload_documents(
         await fh.write(bl_content)
 
     # Persist paths so the workflow route can find them
-    with db.session() as session:
-
+    with Session(engine) as session:
         row = UploadRunRow(
             run_id=run_id,
+            user_id=user_id,
             invoice_path=str(inv_dest),
             bl_path=str(bl_dest),
             country=country.value,
@@ -102,19 +139,27 @@ async def upload_documents(
 
     # Return DocumentResponse using run_id as the document id so the frontend
     # can pass it unchanged to POST /workflow/
-    return DocumentResponse(
-        id=uuid.UUID(run_id),
-        filename=f"{invoice_pdf.filename} + {bl_pdf.filename}",
-        country=country,
-        status=DocumentStatus.PENDING,
-        metadata={
-            "run_id":        run_id,
-            "invoice_path":  str(inv_dest),
-            "bl_path":       str(bl_dest),
-            "inv_bytes":     len(inv_content),
-            "bl_bytes":      len(bl_content),
-        },
-    )
+    return _to_response(row, filename=f"{invoice_pdf.filename} + {bl_pdf.filename}")
+
+
+@router.get(
+    "/{document_id}/file/{kind}",
+    summary="Download an uploaded invoice or bill of lading (owner only)",
+)
+async def get_document_file(
+    document_id: str,
+    kind: str,
+    user_id: str = Depends(get_current_user),
+) -> FileResponse:
+    if kind not in ("invoice", "bl"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown file kind")
+    with Session(engine) as session:
+        row = _get_owned_row(session, document_id, user_id)
+    path = Path(row.invoice_path if kind == "invoice" else row.bl_path)
+    if not path.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File missing on disk")
+    media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    return FileResponse(path, media_type=media_type)
 
 
 @router.get(
@@ -122,35 +167,18 @@ async def upload_documents(
     response_model=DocumentResponse,
     summary="Get upload record by run_id",
 )
-async def get_document(document_id: str) -> DocumentResponse:
-    with db.session() as session:
-        row = session.get(UploadRunRow, document_id)
-    if not row:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Upload not found")
-    return DocumentResponse(
-        id=uuid.UUID(row.run_id),
-        filename=f"invoice + bl",
-        country=CountryCode(row.country),
-        status=DocumentStatus.PENDING,
-        metadata={"invoice_path": row.invoice_path, "bl_path": row.bl_path},
-    )
+async def get_document(document_id: str, user_id: str = Depends(get_current_user)) -> DocumentResponse:
+    with Session(engine) as session:
+        row = _get_owned_row(session, document_id, user_id)
+    return _to_response(row)
 
 
 @router.get(
     "/",
     response_model=list[DocumentResponse],
-    summary="List all uploads",
+    summary="List the current user's uploads",
 )
-async def list_documents() -> list[DocumentResponse]:
-    with db.session() as session:
-        rows = session.exec(select(UploadRunRow)).all()
-    return [
-        DocumentResponse(
-            id=uuid.UUID(r.run_id),
-            filename="invoice + bl",
-            country=CountryCode(r.country),
-            status=DocumentStatus.PENDING,
-            metadata={"invoice_path": r.invoice_path, "bl_path": r.bl_path},
-        )
-        for r in rows
-    ]
+async def list_documents(user_id: str = Depends(get_current_user)) -> list[DocumentResponse]:
+    with Session(engine) as session:
+        rows = session.exec(select(UploadRunRow).where(UploadRunRow.user_id == user_id)).all()
+    return [_to_response(r) for r in rows]

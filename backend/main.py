@@ -7,18 +7,19 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import os
-import logging
+from contextlib import asynccontextmanager
 
 import structlog
 import uvicorn
-from fastapi import FastAPI, Depends
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 
-from routes.upload import router as upload_router
-from routes.workflow import router as workflow_router
-from routes.auth_routes import router as auth_router
+from db import CHECKPOINT_DB, init_db
 from dependencies import get_current_user
+from graph import document_graph
+from routes.auth_routes import router as auth_router
+from routes.upload import router as upload_router
+from routes.workflow import mark_interrupted_runs, router as workflow_router
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -31,71 +32,55 @@ structlog.configure(
         structlog.dev.ConsoleRenderer(),
     ]
 )
-
-loki_url = os.getenv("LOKI_URL")
-if loki_url:
-    try:
-        import logging_loki
-        loki_handler = logging_loki.LokiHandler(
-            url=loki_url,
-            tags={"service": "hackstrom-backend", "event": "hackstrom26"},
-            version="1",
-        )
-        logging.getLogger().addHandler(loki_handler)
-    except Exception as e:
-        print(f"Loki handler failed to init: {e} — continuing without Loki")
-
-logger = logging.getLogger("hackstrom")
 log = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
+
+# Every table module (db, graph) is imported above, so create_all sees them all.
+init_db()
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Swap in a SQLite checkpointer so BLOCKED (HITL) runs survive restarts."""
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver  # noqa: PLC0415
+
+    mark_interrupted_runs()
+    async with AsyncSqliteSaver.from_conn_string(str(CHECKPOINT_DB)) as saver:
+        document_graph.checkpointer = saver
+        log.info("checkpointer.ready", path=str(CHECKPOINT_DB))
+        yield
+
+
 app = FastAPI(
     title="Hackstrom Track 3 API",
     description="Intelligent document processing with LangGraph + multi-country rules",
     version="0.1.0",
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
+_DEFAULT_ORIGINS = ",".join(
+    f"http://{host}:{port}"
+    for host in ("localhost", "127.0.0.1")
+    for port in (5173, 5174, 5175, 3000)
+)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:5174",
-        "http://127.0.0.1:5174",
-        "http://localhost:5175",
-        "http://127.0.0.1:5175",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ],
+    allow_origins=[o.strip() for o in os.getenv("CORS_ORIGINS", _DEFAULT_ORIGINS).split(",") if o.strip()],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # ---------------------------------------------------------------------------
-# Static files + startup DB init
-# ---------------------------------------------------------------------------
-uploads_dir = os.path.join(os.path.dirname(__file__), "uploads")
-os.makedirs(uploads_dir, exist_ok=True)
-os.makedirs("data", exist_ok=True)
-app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
-
-from workflow_db import db as workflow_db_instance
-from sqlmodel import SQLModel
-try:
-    # Explicitly ensure all tables are created on startup
-    SQLModel.metadata.create_all(workflow_db_instance._engine)
-    print("[DB] Tables successfully verified/created at startup")
-except Exception as e:
-    print(f"[DB] Fatal error during startup table creation: {e}")
-
-# ---------------------------------------------------------------------------
 # Routers
 # ---------------------------------------------------------------------------
+# Uploaded files are served only via the authenticated
+# GET /api/v1/upload/{id}/file/{invoice|bl} route — never as public static files.
 app.include_router(auth_router)
 app.include_router(upload_router, prefix="/api/v1/upload", tags=["upload"], dependencies=[Depends(get_current_user)])
 app.include_router(workflow_router, prefix="/api/v1/workflow", tags=["workflow"], dependencies=[Depends(get_current_user)])

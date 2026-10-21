@@ -1,6 +1,6 @@
-import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { getRunStatus, type BBoxEntry, type WorkflowStep } from "@/lib/api";
+import { useEffect, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { getRunStatus, resumeWorkflow, type BBoxEntry, type ComplianceIssue, type WorkflowStep } from "@/lib/api";
 import PDFViewerPanel from "@/components/PDFViewerPanel";
 import { useDemoMode } from "@/demo/DemoContext";
 import { DEMO_WORKFLOW } from "@/demo/mockData";
@@ -282,6 +282,7 @@ function HitlPanel({
   issue,
   invoiceWeight,
   blWeight,
+  error,
 }: {
   phase: "blocked" | "resuming" | "completed";
   correctedWeight: string;
@@ -290,6 +291,7 @@ function HitlPanel({
   issue?: any;
   invoiceWeight?: string | number | null;
   blWeight?: string | number | null;
+  error?: string | null;
 }) {
   const mono = "'JetBrains Mono', monospace";
 
@@ -427,7 +429,7 @@ function HitlPanel({
           display:       "block",
           marginBottom:  "6px",
         }}>
-          CORRECTED GROSS WEIGHT (KG)
+          CORRECTED B/L GROSS WEIGHT (KG)
         </label>
         <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
           <input
@@ -490,6 +492,12 @@ function HitlPanel({
         SUBMIT CORRECTIONS →
       </button>
 
+      {error && (
+        <p role="alert" style={{ fontFamily: mono, fontSize: "0.62rem", color: "var(--accent-red)", marginTop: "10px", textAlign: "center" }}>
+          {error}
+        </p>
+      )}
+
       <p style={{ fontFamily: mono, fontSize: "0.58rem", color: "var(--text-muted)", marginTop: "10px", textAlign: "center" }}>
         B/L declared: {blWeight ? `${blWeight} kg` : "NOT SPECIFIED"} · Invoice extracted: {invoiceWeight ?? "NOT SPECIFIED"} kg
       </p>
@@ -506,7 +514,11 @@ interface DeclarationPageProps {
 export default function DeclarationPage({ runId, onBack }: DeclarationPageProps) {
   const [docSource,    setDocSource]    = useState<"invoice" | "bl">("invoice");
   const [expandedNode, setExpandedNode] = useState<string | null>(null);
-  const [correctedWeight, setCorrectedWeight] = useState("820");
+  const [correctedWeight, setCorrectedWeight] = useState("");
+  const [resumeSubmitting, setResumeSubmitting] = useState(false);
+  const [resumeSubmitted,  setResumeSubmitted]  = useState(false);
+  const [resumeError,      setResumeError]      = useState<string | null>(null);
+  const queryClient = useQueryClient();
 
   const toggleNode = (name: string) =>
     setExpandedNode((prev) => (prev === name ? null : name));
@@ -533,16 +545,55 @@ export default function DeclarationPage({ runId, onBack }: DeclarationPageProps)
   const result                      = data?.result ?? {};
   const compStatus                  = result.compliance_status as string | undefined;
   const declaration                 = result.declaration as Record<string, unknown> | undefined;
+  // Completed runs carry compliance inside the declaration; blocked runs
+  // expose their issues directly on the result.
   const compliance                  = (declaration?.compliance as {
     status: string;
-    issues: Array<{ field: string; message: string; severity: string }>;
-  } | undefined);
+    issues: ComplianceIssue[];
+  } | undefined) ?? (Array.isArray(result.issues)
+    ? { status: "BLOCK", issues: result.issues as ComplianceIssue[] }
+    : undefined);
   const summaryText = result.summary as string | undefined;
 
   const cc = compColor(compStatus);
 
   // ── HITL: is human correction needed right now? ───────────────────────────
-  const [realPhase, setRealPhase] = useState<"blocked" | "resuming" | "completed">("blocked");
+  const liveStatus = realData?.status;
+  const realPhase: "blocked" | "resuming" | "completed" =
+    resumeSubmitting || (resumeSubmitted && (liveStatus === "running" || liveStatus === "queued"))
+      ? "resuming"
+      : resumeSubmitted && liveStatus === "completed"
+        ? "completed"
+        : "blocked";
+  const blockingIssue = (result.blocking_issues?.[0] ?? result.issues?.[0]) as ComplianceIssue | undefined;
+  const realInvoiceWeight = result.invoice?.gross_weight_kg as number | undefined;
+
+  // Pre-fill the correction with the invoice weight the first time it is known.
+  useEffect(() => {
+    if (correctedWeight !== "") return;
+    if (isDemoMode) setCorrectedWeight("820");
+    else if (realInvoiceWeight) setCorrectedWeight(String(realInvoiceWeight));
+  }, [isDemoMode, realInvoiceWeight, correctedWeight]);
+
+  const submitRealCorrections = async () => {
+    const weight = Number(correctedWeight);
+    if (!Number.isFinite(weight) || weight <= 0) {
+      setResumeError("Enter a gross weight greater than 0 kg.");
+      return;
+    }
+    setResumeError(null);
+    setResumeSubmitting(true);
+    try {
+      await resumeWorkflow(runId, { gross_weight_kg: weight });
+      setResumeSubmitted(true);
+      // Status is now "running" server-side; refetching restarts polling.
+      await queryClient.invalidateQueries({ queryKey: ["run-status", runId] });
+    } catch (e: any) {
+      setResumeError(e?.response?.data?.detail ?? "Could not resume the workflow — please try again.");
+    } finally {
+      setResumeSubmitting(false);
+    }
+  };
   const needsHITL = (isDemoMode && demoPhase === "blocked") || (!isDemoMode && data?.status === "blocked");
   const isResuming = (isDemoMode && demoPhase === "resuming") || (!isDemoMode && realPhase === "resuming");
   const currentPhase = isDemoMode ? demoPhase : realPhase;
@@ -994,25 +1045,15 @@ export default function DeclarationPage({ runId, onBack }: DeclarationPageProps)
                 phase={currentPhase as any}
                 correctedWeight={correctedWeight}
                 onWeightChange={setCorrectedWeight}
-                issue={isDemoMode ? DEMO_WORKFLOW.compliance_issues[0] : (data?.result as any)?.compliance_issues?.[0]}
-                invoiceWeight={isDemoMode ? 820 : (data?.result as any)?.invoice?.gross_weight_kg}
-                blWeight={isDemoMode ? 860 : (data?.result as any)?.bill_of_lading?.gross_weight_kg}
+                issue={isDemoMode ? DEMO_WORKFLOW.compliance_issues[0] : blockingIssue}
+                invoiceWeight={isDemoMode ? 820 : realInvoiceWeight}
+                blWeight={isDemoMode ? 860 : result.bill_of_lading?.gross_weight_kg}
+                error={isDemoMode ? null : resumeError}
                 onSubmit={async () => {
                   if (isDemoMode) {
                     submitCorrections(parseFloat(correctedWeight) || 860);
                   } else {
-                    setRealPhase("resuming");
-                    try {
-                      await fetch(`http://localhost:8000/api/v1/workflow/resume/${runId}`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ gross_weight_kg: Number(correctedWeight) || 860 })
-                      });
-                      setTimeout(() => setRealPhase("completed"), 2500);
-                    } catch (e) {
-                      console.error(e);
-                      setRealPhase("blocked");
-                    }
+                    await submitRealCorrections();
                   }
                 }}
               />
