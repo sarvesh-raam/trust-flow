@@ -14,11 +14,13 @@ import structlog
 import uvicorn
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from prometheus_fastapi_instrumentator import Instrumentator
 
 from db import CHECKPOINT_DB, init_db
 from dependencies import get_current_user
 from graph import document_graph
 from routes.auth_routes import router as auth_router
+from routes.logs import capture_log_event, router as logs_router
 from routes.upload import router as upload_router
 from routes.workflow import mark_interrupted_runs, router as workflow_router
 
@@ -31,11 +33,25 @@ for _stream in (sys.stdout, sys.stderr):
     if hasattr(_stream, "reconfigure"):
         _stream.reconfigure(encoding="utf-8", errors="replace")
 
+
+def _sse_capture(_logger, _method, event_dict):
+    """Structlog processor: fan out every log event to /api/v1/logs/stream subscribers."""
+    capture_log_event({
+        "ts": event_dict.get("timestamp", ""),
+        "level": event_dict.get("level", "info"),
+        "event": str(event_dict.get("event", "")),
+        **{k: str(v) for k, v in event_dict.items()
+           if k not in ("timestamp", "level", "event", "_record", "_logger")},
+    })
+    return event_dict
+
+
 structlog.configure(
     processors=[
         structlog.contextvars.merge_contextvars,
         structlog.processors.add_log_level,
         structlog.processors.TimeStamper(fmt="iso"),
+        _sse_capture,
         structlog.dev.ConsoleRenderer(),
     ]
 )
@@ -83,6 +99,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Prometheus scrape endpoint (request metrics + metrics.py pipeline counters).
+Instrumentator(
+    should_group_status_codes=True,
+    should_ignore_untemplated=True,
+    excluded_handlers=["/health", "/metrics"],
+).instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
+
 # ---------------------------------------------------------------------------
 # Routers
 # ---------------------------------------------------------------------------
@@ -91,6 +114,8 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(upload_router, prefix="/api/v1/upload", tags=["upload"], dependencies=[Depends(get_current_user)])
 app.include_router(workflow_router, prefix="/api/v1/workflow", tags=["workflow"], dependencies=[Depends(get_current_user)])
+# Auth is checked inside the route: EventSource can only send the token as ?token=.
+app.include_router(logs_router, prefix="/api/v1/logs", tags=["logs"])
 
 
 # ---------------------------------------------------------------------------

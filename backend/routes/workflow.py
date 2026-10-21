@@ -14,6 +14,12 @@ from sqlmodel import Session as DBSession, select
 
 from db import UploadRunRow, WorkflowRunRow, engine
 from dependencies import get_current_user
+from metrics import (
+    COMPLIANCE_STATUS_TOTAL,
+    HITL_INTERRUPTS_TOTAL,
+    HITL_RESUMES_TOTAL,
+    PIPELINE_RUNS_TOTAL,
+)
 from graph import (
     GraphState,
     NodeInterrupt,
@@ -308,7 +314,8 @@ async def _handle_blocked(workflow_id: str, msg: str, config: dict) -> None:
 
     # The run may never reach audit_trace, so persist what we have now.
     persist_audit_trail(workflow_id, audit_trail)
-    _save(
+    HITL_INTERRUPTS_TOTAL.inc()
+    row = _save(
         workflow_id,
         WorkflowStatus.BLOCKED,
         result={
@@ -323,6 +330,7 @@ async def _handle_blocked(workflow_id: str, msg: str, config: dict) -> None:
         },
         steps=_steps_from(audit_trail),
     )
+    _count_outcome(row, WorkflowStatus.BLOCKED)
     log.warning("workflow.hitl_interrupt", workflow_id=workflow_id, detail=msg)
 
 
@@ -358,7 +366,7 @@ async def _drive_graph(workflow_id: str, graph_input: GraphState | None) -> None
         audit_trail = _state_get(result, "audit_trail") or []
         bboxes = _bboxes_from(result)
 
-        _save(
+        row = _save(
             workflow_id,
             WorkflowStatus.COMPLETED,
             result={
@@ -371,6 +379,9 @@ async def _drive_graph(workflow_id: str, graph_input: GraphState | None) -> None
             },
             steps=_steps_from(audit_trail),
         )
+        _count_outcome(row, WorkflowStatus.COMPLETED)
+        if cr:
+            COMPLIANCE_STATUS_TOTAL.labels(status=cr.status).inc()
         log.info("workflow.completed", workflow_id=workflow_id, bboxes=len(bboxes))
 
     except NodeInterrupt as exc:
@@ -378,8 +389,13 @@ async def _drive_graph(workflow_id: str, graph_input: GraphState | None) -> None
         await _handle_blocked(workflow_id, str(exc), config)
 
     except Exception as exc:
-        _save(workflow_id, WorkflowStatus.FAILED, result={"error": _readable_error(exc), "bboxes": []})
+        row = _save(workflow_id, WorkflowStatus.FAILED, result={"error": _readable_error(exc), "bboxes": []})
+        _count_outcome(row, WorkflowStatus.FAILED)
         log.exception("workflow.failed", workflow_id=workflow_id, error=str(exc))
+
+
+def _count_outcome(row: WorkflowRunRow | None, status_: WorkflowStatus) -> None:
+    PIPELINE_RUNS_TOTAL.labels(status=status_.value, country=row.country if row else "unknown").inc()
 
 
 async def _run_graph(
@@ -646,6 +662,7 @@ async def resume_workflow(
     )
 
     row = _save(run_id, WorkflowStatus.RUNNING) or row
+    HITL_RESUMES_TOTAL.inc()
     background_tasks.add_task(_resume_graph, workflow_id=run_id)
     log.info("workflow.resumed", workflow_id=run_id, corrected=sorted(corrections))
     return WorkflowResponse(**_to_record(row).model_dump())

@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: trustflow-config
+  namespace: trust-flow
+data:
+  DATABASE_URL: "sqlite:////app/data/hackstrom.db"
+  CHECKPOINT_DB: "/app/data/checkpoints.db"
+  UPLOAD_DIR: "/app/uploads"
+  GROQ_MODEL: "openai/gpt-oss-120b"
+  FIREBASE_PROJECT_ID: "trustflow-45bec"

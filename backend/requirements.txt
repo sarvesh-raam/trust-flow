@@ -20,3 +20,5 @@ google-auth>=2.29.0    # Firebase ID token verification
 requests>=2.31.0       # transport for google-auth
 PyJWT==2.8.0
 cryptography==42.0.5
+prometheus-fastapi-instrumentator==6.1.0   # GET /metrics
+prometheus-client==0.20.0

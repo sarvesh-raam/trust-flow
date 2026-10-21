@@ -41,3 +41,9 @@ Thumbs.db
 *.db-shm
 backend/uploads/
 *.log
+
+# Local tooling / scratch
+.temp_info.txt
+*.env
+.claudesettings
+debug.log

@@ -2,15 +2,16 @@ import axios, { type AxiosRequestConfig } from "axios";
 import { auth, type User } from "./firebase";
 
 export type CountryCode = "us" | "uae";
-export type WorkflowStatus = "queued" | "running" | "completed" | "failed" | "blocked" | "interrupted";
+export type WorkflowStatus = "queued" | "uploaded" | "running" | "completed" | "failed" | "blocked" | "interrupted";
 
 export const STATUS_CONFIG: Record<WorkflowStatus, { label: string; cls: string }> = {
-  completed:   { label: "DONE",    cls: "badge-blue"  },
-  blocked:     { label: "BLOCK",   cls: "badge-block" },
-  failed:      { label: "FAIL",    cls: "badge-block" },
-  running:     { label: "RUNNING", cls: "badge-blue"  },
-  queued:      { label: "QUEUED",  cls: "badge-muted" },
-  interrupted: { label: "PAUSED",  cls: "badge-warn"  },
+  completed:   { label: "DONE",     cls: "badge-blue"  },
+  blocked:     { label: "BLOCK",    cls: "badge-block" },
+  failed:      { label: "FAIL",     cls: "badge-block" },
+  running:     { label: "RUNNING",  cls: "badge-blue"  },
+  queued:      { label: "QUEUED",   cls: "badge-muted" },
+  uploaded:    { label: "UPLOADED", cls: "badge-muted" },
+  interrupted: { label: "PAUSED",   cls: "badge-warn"  },
 };
 
 export interface WorkflowStep {
@@ -18,7 +19,7 @@ export interface WorkflowStep {
   status: "pending" | "running" | "completed" | "failed" | "blocked" | "interrupted" | "queued";
   started_at?: string | null;
   completed_at?: string | null;
-  output?: Record<string, any>;
+  output?: Record<string, any> & { reasoning_note?: string | null };
   error?: string | null;
 }
 
@@ -55,7 +56,7 @@ export interface StatusResponse extends WorkflowResponse {
   bl_pdf_url?: string;
 }
 
-const API_BASE: string =
+export const API_BASE: string =
   import.meta.env.VITE_API_BASE ||
   (window.location.hostname === "localhost" ? "http://localhost:8000/api/v1" : "/api/v1");
 
@@ -84,20 +85,47 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
-// On 401, re-exchange the Firebase token once and retry the request, so an
-// expired backend JWT never surfaces as an error while the user is signed in.
+/** Guest sessions have no Firebase user, so they renew via the refresh token. */
+async function refreshGuestToken(): Promise<void> {
+  const refreshToken = localStorage.getItem("refresh_token");
+  if (!refreshToken) throw new Error("No refresh token");
+  const { data } = await axios.post(`${API_BASE}/auth/refresh`, { refresh_token: refreshToken });
+  localStorage.setItem("access_token", data.access_token);
+}
+
+// On 401, renew the backend JWT once and retry the request, so an expired
+// token never surfaces as an error while the user is signed in.
 let refreshing: Promise<void> | null = null;
 api.interceptors.response.use(undefined, async (error) => {
   const original = error.config as (AxiosRequestConfig & { _retried?: boolean }) | undefined;
-  const user = auth.currentUser;
-  if (error.response?.status !== 401 || !original || original._retried || !user) {
+  const user = auth?.currentUser ?? null;
+  const isGuest = Boolean(localStorage.getItem("guest_session"));
+  if (error.response?.status !== 401 || !original || original._retried || (!user && !isGuest)) {
     throw error;
   }
   original._retried = true;
-  refreshing ??= exchangeFirebaseToken(user, true).finally(() => { refreshing = null; });
+  refreshing ??= (user ? exchangeFirebaseToken(user, true) : refreshGuestToken())
+    .finally(() => { refreshing = null; });
   await refreshing;
   return api(original);
 });
+
+/** Start a shared local guest session (only works when the backend sets ALLOW_GUEST_LOGIN). */
+export const createGuestSession = async () => {
+  try {
+    const { data } = await axios.post(`${API_BASE}/auth/google`, { firebase_token: "local-guest" });
+    localStorage.setItem("access_token", data.access_token);
+    localStorage.setItem("refresh_token", data.refresh_token);
+    localStorage.setItem(
+      "guest_session",
+      JSON.stringify({ displayName: "Local Guest", email: "guest@local", photoURL: null }),
+    );
+    return data;
+  } catch (e: any) {
+    if (e?.response?.status === 403) throw new Error("Guest login is disabled on this server.");
+    throw e;
+  }
+};
 
 export const uploadDocument = async (invoice: File, bl: File, country: CountryCode) => {
   const formData = new FormData();

@@ -6,7 +6,7 @@ import { useQuery } from "@tanstack/react-query";
 import { authHeaders, getRunStatus, resolveApiUrl, type BBoxEntry } from "@/lib/api";
 import { getPDF, storePDF, clearPDF } from "@/lib/pdfStore";
 
-// Configure pdf.js worker (Vite resolves the URL at build time).
+// Configure pdf.js worker (Vite bundles it; nginx serves .mjs as JavaScript).
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   "pdfjs-dist/build/pdf.worker.min.mjs",
   import.meta.url,
@@ -57,6 +57,19 @@ export default function PDFViewerPanel({
   const replaceRef   = useRef<HTMLInputElement>(null);
 
   const [pdfLoadError, setPdfLoadError] = useState<string | null>(null);
+  const [renderWidth, setRenderWidth] = useState(pageWidth);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver((entries) => {
+      if (entries[0] && entries[0].contentRect.width > 0) {
+        setRenderWidth(Math.min(entries[0].contentRect.width, pageWidth));
+      }
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [pageWidth]);
 
   const handleReplace = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -131,14 +144,20 @@ export default function PDFViewerPanel({
 
   // ── Resolve PDF source: prop → API URL → sessionStorage ─────────────────
   if (!pdfUrl) {
-    if (source === "invoice" && statusData?.invoice_pdf_url) {
-      pdfUrl = statusData.invoice_pdf_url;
-    } else if (source === "bl" && statusData?.bl_pdf_url) {
-      pdfUrl = statusData.bl_pdf_url;
+    if (statusData?.document_id) {
+      pdfUrl = getPDF(statusData.document_id, source);
     }
-  }
-  if (!pdfUrl) {
-    pdfUrl = getPDF(runId, source);
+    if (!pdfUrl) {
+      pdfUrl = getPDF(runId, source);
+    }
+
+    if (!pdfUrl) {
+      if (source === "invoice" && statusData?.invoice_pdf_url) {
+        pdfUrl = statusData.invoice_pdf_url;
+      } else if (source === "bl" && statusData?.bl_pdf_url) {
+        pdfUrl = statusData.bl_pdf_url;
+      }
+    }
   }
 
   // Backend file URLs ("/api/v1/upload/…/file/…") are owner-only, so resolve them
@@ -293,10 +312,11 @@ export default function PDFViewerPanel({
         ref={containerRef}
         style={{
           position:        "relative",
-          display:         "inline-block",
+          display:         "block",
           border:          "1px solid #1e293b",
           overflow:        "hidden",
-          width:           pageWidth,
+          width:           "100%",
+          maxWidth:        pageWidth,
           backgroundColor: "var(--bg-primary)",
         }}
       >
@@ -343,7 +363,7 @@ export default function PDFViewerPanel({
           ) : (
             <Page
               pageNumber={pageNumber}
-              width={pageWidth}
+              width={renderWidth}
               renderTextLayer
               renderAnnotationLayer={false}
               onLoadSuccess={(page) => {

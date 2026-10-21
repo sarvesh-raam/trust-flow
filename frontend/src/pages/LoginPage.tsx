@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { signInWithGoogle } from "@/lib/firebase";
+import { createGuestSession } from "@/lib/api";
+import { isFirebaseConfigured, signInWithGoogle } from "@/lib/firebase";
 
 export default function LoginPage() {
   const [loading, setLoading] = useState(false);
@@ -17,6 +18,19 @@ export default function LoginPage() {
       if (!msg.includes("popup-closed-by-user")) {
         setError(msg);
       }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleGuestSignIn = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      await createGuestSession();
+      window.location.reload();
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
@@ -82,49 +96,71 @@ export default function LoginPage() {
           </p>
 
           {/* Google Sign-In button */}
+          {isFirebaseConfigured && (
+            <button
+              onClick={handleSignIn}
+              disabled={loading}
+              style={{
+                width:           "100%",
+                display:         "flex",
+                alignItems:      "center",
+                justifyContent:  "center",
+                gap:             "12px",
+                padding:         "12px 20px",
+                backgroundColor: loading ? "#0a0a12" : "#ffffff",
+                border:          "1px solid #d1d5db",
+                cursor:          loading ? "not-allowed" : "pointer",
+                opacity:         loading ? 0.7 : 1,
+                transition:      "background-color 0.15s ease",
+                marginBottom:    "16px",
+              }}
+              onMouseEnter={(e) => {
+                if (!loading) (e.currentTarget as HTMLElement).style.backgroundColor = "#f3f4f6";
+              }}
+              onMouseLeave={(e) => {
+                if (!loading) (e.currentTarget as HTMLElement).style.backgroundColor = "#ffffff";
+              }}
+            >
+              {!loading && (
+                <svg width="18" height="18" viewBox="0 0 18 18">
+                  <path fill="#4285F4" d="M16.51 8H8.98v3h4.3c-.18 1-.74 1.48-1.6 2.04v2.01h2.6a7.8 7.8 0 002.38-5.88c0-.57-.05-.66-.15-1.18z"/>
+                  <path fill="#34A853" d="M8.98 17c2.16 0 3.97-.72 5.3-1.94l-2.6-2a4.8 4.8 0 01-7.18-2.54H1.83v2.07A8 8 0 008.98 17z"/>
+                  <path fill="#FBBC05" d="M4.5 10.52a4.8 4.8 0 010-3.04V5.41H1.83a8 8 0 000 7.18l2.67-2.07z"/>
+                  <path fill="#EA4335" d="M8.98 4.18c1.17 0 2.23.4 3.06 1.2l2.3-2.3A8 8 0 001.83 5.4L4.5 7.49a4.77 4.77 0 014.48-3.3z"/>
+                </svg>
+              )}
+
+              <span style={{
+                fontFamily:    "'JetBrains Mono', monospace",
+                fontSize:      "0.72rem",
+                fontWeight:    700,
+                color:         loading ? "#475569" : "#1e293b",
+                letterSpacing: "0.04em",
+              }}>
+                {loading ? "SIGNING IN…" : "Continue with Google"}
+              </span>
+            </button>
+          )}
+
           <button
-            onClick={handleSignIn}
+            onClick={handleGuestSignIn}
             disabled={loading}
             style={{
               width:           "100%",
-              display:         "flex",
-              alignItems:      "center",
-              justifyContent:  "center",
-              gap:             "12px",
-              padding:         "12px 20px",
-              backgroundColor: loading ? "#0a0a12" : "#ffffff",
-              border:          "1px solid #d1d5db",
+              padding:         "11px 20px",
+              backgroundColor: "transparent",
+              border:          "1px solid #1e3a5f",
+              color:           "#60a5fa",
               cursor:          loading ? "not-allowed" : "pointer",
               opacity:         loading ? 0.7 : 1,
-              transition:      "background-color 0.15s ease",
-              marginBottom:    "16px",
-            }}
-            onMouseEnter={(e) => {
-              if (!loading) (e.currentTarget as HTMLElement).style.backgroundColor = "#f3f4f6";
-            }}
-            onMouseLeave={(e) => {
-              if (!loading) (e.currentTarget as HTMLElement).style.backgroundColor = "#ffffff";
+              fontFamily:      "'JetBrains Mono', monospace",
+              fontSize:        "0.7rem",
+              fontWeight:      700,
+              letterSpacing:   "0.08em",
+              marginBottom:    "12px",
             }}
           >
-            {/* Google logo SVG */}
-            {!loading && (
-              <svg width="18" height="18" viewBox="0 0 18 18">
-                <path fill="#4285F4" d="M16.51 8H8.98v3h4.3c-.18 1-.74 1.48-1.6 2.04v2.01h2.6a7.8 7.8 0 002.38-5.88c0-.57-.05-.66-.15-1.18z"/>
-                <path fill="#34A853" d="M8.98 17c2.16 0 3.97-.72 5.3-1.94l-2.6-2a4.8 4.8 0 01-7.18-2.54H1.83v2.07A8 8 0 008.98 17z"/>
-                <path fill="#FBBC05" d="M4.5 10.52a4.8 4.8 0 010-3.04V5.41H1.83a8 8 0 000 7.18l2.67-2.07z"/>
-                <path fill="#EA4335" d="M8.98 4.18c1.17 0 2.23.4 3.06 1.2l2.3-2.3A8 8 0 001.83 5.4L4.5 7.49a4.77 4.77 0 014.48-3.3z"/>
-              </svg>
-            )}
-
-            <span style={{
-              fontFamily:    "'JetBrains Mono', monospace",
-              fontSize:      "0.72rem",
-              fontWeight:    700,
-              color:         loading ? "#475569" : "#1e293b",
-              letterSpacing: "0.04em",
-            }}>
-              {loading ? "SIGNING IN…" : "Continue with Google"}
-            </span>
+            Continue Locally
           </button>
 
           {/* Error message */}
@@ -156,7 +192,9 @@ export default function LoginPage() {
               letterSpacing: "0.06em",
               marginBottom:  "4px",
             }}>
-              Secure authentication powered by Firebase
+              {isFirebaseConfigured
+                ? "Secure authentication powered by Firebase"
+                : "Firebase is not configured — local guest mode available"}
             </p>
             <p style={{
               fontFamily:    "'JetBrains Mono', monospace",

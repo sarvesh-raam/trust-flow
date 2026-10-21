@@ -4,7 +4,6 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { uploadDocument, createWorkflow, type CountryCode } from "@/lib/api";
-import { useDemoMode } from "@/demo/DemoContext";
 import { storePDF } from "@/lib/pdfStore";
 
 function extractErrMsg(err: unknown): string {
@@ -119,18 +118,14 @@ function Label({ children }: { children: React.ReactNode }) {
   );
 }
 
-interface UploadPageProps {
-  onDemoLaunch?: () => void;
-}
+interface UploadPageProps {}
 
-export default function UploadPage({ onDemoLaunch }: UploadPageProps) {
+export default function UploadPage({}: UploadPageProps) {
   const [invoiceFile, setInvoiceFile] = useState<File | null>(null);
   const [blFile,      setBlFile]      = useState<File | null>(null);
   const [lastDocId,   setLastDocId]   = useState<string | null>(null);
-  const [demoFaking,  setDemoFaking]  = useState(false);
-  const qc = useQueryClient();
 
-  const { isDemoMode } = useDemoMode();
+  const qc = useQueryClient();
 
   const { register, handleSubmit } = useForm<FormValues>({
     resolver: zodResolver(schema),
@@ -157,15 +152,6 @@ export default function UploadPage({ onDemoLaunch }: UploadPageProps) {
   const onSubmit = async (values: FormValues) => {
     if (!invoiceFile || !blFile) return;
 
-    // ── Demo mode: skip the API entirely ────────────────────────────────────
-    if (isDemoMode) {
-      setDemoFaking(true);
-      await new Promise((r) => setTimeout(r, 900));
-      setDemoFaking(false);
-      onDemoLaunch?.();
-      return;
-    }
-
     // ── Real mode ────────────────────────────────────────────────────────────
     const doc = await uploadMutation.mutateAsync({
       inv: invoiceFile,
@@ -180,8 +166,8 @@ export default function UploadPage({ onDemoLaunch }: UploadPageProps) {
     await workflowMutation.mutateAsync({ docId: doc.id, country: values.country });
   };
 
-  const isPending = demoFaking || uploadMutation.isPending || workflowMutation.isPending;
-  const hasError  = !isDemoMode && (uploadMutation.isError || workflowMutation.isError);
+  const isPending = uploadMutation.isPending || workflowMutation.isPending;
+  const hasError  = uploadMutation.isError || workflowMutation.isError;
   const errMsg    = hasError
     ? extractErrMsg(uploadMutation.error ?? workflowMutation.error)
     : "";

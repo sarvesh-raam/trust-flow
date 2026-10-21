@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { exchangeFirebaseToken as exchange } from "../lib/api";
-import { auth, onAuthStateChanged, type User } from "../lib/firebase";
+import { auth, isFirebaseConfigured, onAuthStateChanged, type User } from "../lib/firebase";
 
 interface AuthContextType {
   user: User | null;
@@ -29,6 +29,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    // Demo mode (?demo=true) runs on mock data and needs no real account.
+    if (new URLSearchParams(window.location.search).get("demo") === "true") {
+      setUser({ displayName: "Demo Operator", email: "demo@local", photoURL: null } as User);
+      setLoading(false);
+      return;
+    }
+
+    // Guest sessions have no Firebase user; the API client renews their
+    // token with the refresh token on 401.
+    const guestSession = localStorage.getItem("guest_session");
+    if (guestSession) {
+      try {
+        setUser(JSON.parse(guestSession) as User);
+        setLoading(false);
+        return;
+      } catch {
+        localStorage.removeItem("guest_session");
+      }
+    }
+
+    if (!isFirebaseConfigured || !auth) {
+      setLoading(false);
+      return;
+    }
+
     const unsubscribe = onAuthStateChanged(auth, async (u) => {
       if (u) {
         // Exchange Firebase ID token for backend JWT (non-blocking — failure keeps user logged in)
@@ -43,9 +68,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return unsubscribe;
   }, []);
 
-  // Refresh the backend JWT before its 30-minute expiry.
+  // Refresh the backend JWT before its 30-minute expiry (Firebase users only).
   useEffect(() => {
-    if (!user) return;
+    if (!user || !auth?.currentUser) return;
     const interval = setInterval(async () => {
       await exchangeFirebaseToken(user);
     }, TOKEN_REFRESH_MS);

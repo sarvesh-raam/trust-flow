@@ -47,6 +47,7 @@ import yaml
 from sqlmodel import Field as SQLField, Session, SQLModel, delete
 
 from db import BACKEND_DIR, engine
+from metrics import OCR_CONFIDENCE
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 
@@ -296,6 +297,7 @@ async def ocr_extract(state: GraphState) -> dict[str, Any]:
         None, _ocr_extract_impl, state
     )
 
+    OCR_CONFIDENCE.observe(updated.ocr_confidence)
     inv_chars = len(updated.invoice_ocr_text or "")
     bl_chars  = len(updated.bl_ocr_text  or "")
     inv_bbox  = len(updated.invoice_bboxes or [])

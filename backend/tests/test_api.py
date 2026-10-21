@@ -235,3 +235,32 @@ def test_blocked_run_survives_restart(fake_docs):
         r = c2.post(f"/api/v1/workflow/resume/{run_id}", json={"gross_weight_kg": 820}, headers=auth_headers("alice"))
         assert r.status_code == 200, r.text
         assert _status(c2, run_id)["status"] == "completed"
+
+
+# ── Ported from origin/main: guest login, metrics, log stream ────────────────
+
+def test_guest_login_is_off_by_default(client):
+    r = client.post("/api/v1/auth/google", json={"firebase_token": "local-guest"})
+    assert r.status_code == 403
+
+
+def test_guest_login_when_enabled(client, monkeypatch):
+    from routes import auth_routes
+
+    monkeypatch.setattr(auth_routes, "ALLOW_GUEST_LOGIN", True)
+    r = client.post("/api/v1/auth/google", json={"firebase_token": "local-guest"})
+    assert r.status_code == 200, r.text
+    hdrs = {"Authorization": f"Bearer {r.json()['access_token']}"}
+    assert client.get("/api/v1/workflow/", headers=hdrs).status_code == 200
+
+
+def test_metrics_endpoint_counts_pipeline_runs(client, fake_docs):
+    _start_run(client)
+    body = client.get("/metrics").text
+    assert "trustflow_pipeline_runs_total" in body
+    assert "trustflow_ocr_confidence" in body
+
+
+def test_log_stream_requires_a_valid_token(client):
+    assert client.get("/api/v1/logs/stream", params={"token": "nope"}).status_code == 401
+    assert client.get("/api/v1/logs/stream").status_code == 422

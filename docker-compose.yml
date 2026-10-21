@@ -37,6 +37,20 @@ services:
     command: -config.file=/etc/loki/local-config.yaml
     restart: unless-stopped
 
+  prometheus:
+    image: prom/prometheus:v2.47.0
+    container_name: trustflow_prometheus
+    ports:
+      - "9090:9090"
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=24h'
+    volumes:
+      - ./backend/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - backend
+    restart: unless-stopped
+
   grafana:
     image: grafana/grafana:10.2.0
     container_name: hackstrom_grafana
@@ -52,6 +66,7 @@ services:
       - ./backend/grafana/dashboards:/etc/grafana/provisioning/dashboards
     depends_on:
       - loki
+      - prometheus
     restart: unless-stopped
 
 volumes:
