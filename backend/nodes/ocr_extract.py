@@ -10,6 +10,7 @@ populates WorkflowState with:
 """
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any
 
@@ -69,42 +70,46 @@ def _extract_tables(document: Any) -> list[list[dict[str, Any]]]:
 
 
 def _extract_bboxes(document: Any, source: str) -> list[dict[str, Any]]:
-    """Return one bbox dict per text element that has provenance information."""
+    """Return one bbox dict per text element that has provenance information.
+
+    Docling reports PDF boxes with a bottom-left origin; the frontend overlay
+    expects top-left, so each box is converted using its page height.
+    """
     bboxes: list[dict[str, Any]] = []
     for element, _level in document.iterate_items():
         if not (hasattr(element, "prov") and element.prov):
             continue
         prov = element.prov[0]
         try:
+            box = prov.bbox.to_top_left_origin(page_height=document.pages[prov.page_no].size.height)
             bboxes.append(
                 {
                     "text": element.text if hasattr(element, "text") else "",
-                    "bbox": [
-                        prov.bbox.l,
-                        prov.bbox.t,
-                        prov.bbox.r,
-                        prov.bbox.b,
-                    ],
+                    "bbox": [box.l, box.t, box.r, box.b],
                     "page": prov.page_no,
                     "source": source,
                 }
             )
-        except AttributeError as exc:
+        except (AttributeError, KeyError) as exc:
             # Provenance shape varies by Docling version; skip malformed entries.
             log.debug("ocr_extract.bbox_skip", error=str(exc))
     return bboxes
 
 
-def _doc_confidence(bboxes: list[dict], text: str) -> float:
-    """Ratio of bbox elements to word count, clipped to [0.0, 1.0].
+def _doc_confidence(result: Any, text: str) -> float:
+    """Docling's own conversion quality score, in [0.0, 1.0].
 
-    Heuristic interpretation:
-      ≈ 1.0 → native text-layer PDF (high quality)
-      < 0.3 → scanned image with sparse structure detection (low quality)
+    Uses ConversionResult.confidence.mean_score (layout + parse + OCR quality);
+    falls back to parse_score, then to "has text or not" on Docling builds
+    without a confidence report.  Sub-scores are NaN when they do not apply
+    (e.g. ocr_score for a native text-layer PDF).
     """
-    word_count = max(len(text.split()), 1)
-    raw = len(bboxes) / word_count
-    return min(1.0, max(0.0, raw))
+    report = getattr(result, "confidence", None)
+    for name in ("mean_score", "parse_score"):
+        score = getattr(report, name, None)
+        if isinstance(score, (int, float)) and math.isfinite(score):
+            return min(1.0, max(0.0, float(score)))
+    return 1.0 if text.strip() else 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -161,8 +166,11 @@ def ocr_extract_node(state: WorkflowState) -> WorkflowState:
                 path=str(resolved),
                 error=str(exc),
             )
-            confidences.append(0.0)
-            continue
+            # Fail the run with the real cause rather than treating the
+            # document as blank (which would surface as a misleading
+            # "No invoice document was extracted" BLOCK).
+            label = "invoice" if doc_type == "invoice" else "bill of lading"
+            raise RuntimeError(f"OCR could not read the {label}: {exc}") from exc
 
         document = result.document
 
@@ -180,7 +188,7 @@ def ocr_extract_node(state: WorkflowState) -> WorkflowState:
         bboxes = _extract_bboxes(document, source=doc_type)
 
         # ── Per-document confidence ───────────────────────────────────────
-        doc_conf = _doc_confidence(bboxes, text)
+        doc_conf = _doc_confidence(result, text)
         confidences.append(doc_conf)
 
         log.info(

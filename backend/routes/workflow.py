@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from datetime import datetime
 from typing import Any
@@ -325,6 +326,20 @@ async def _handle_blocked(workflow_id: str, msg: str, config: dict) -> None:
     log.warning("workflow.hitl_interrupt", workflow_id=workflow_id, detail=msg)
 
 
+_LAST_EXCEPTION_RE = re.compile(r"<last_exception>\s*(.*?)\s*</last_exception>", re.DOTALL)
+
+
+def _readable_error(exc: Exception) -> str:
+    """Short, user-facing error text.
+
+    Instructor's retry error wraps every attempt in XML; only the final
+    exception is useful to show in the UI.
+    """
+    text = str(exc)
+    match = _LAST_EXCEPTION_RE.search(text)
+    return (match.group(1) if match else text).strip()[:1000]
+
+
 async def _drive_graph(workflow_id: str, graph_input: GraphState | None) -> None:
     """Run (graph_input) or resume (None) the graph and record the outcome."""
     config = {"configurable": {"thread_id": workflow_id}}
@@ -363,7 +378,7 @@ async def _drive_graph(workflow_id: str, graph_input: GraphState | None) -> None
         await _handle_blocked(workflow_id, str(exc), config)
 
     except Exception as exc:
-        _save(workflow_id, WorkflowStatus.FAILED, result={"error": str(exc), "bboxes": []})
+        _save(workflow_id, WorkflowStatus.FAILED, result={"error": _readable_error(exc), "bboxes": []})
         log.exception("workflow.failed", workflow_id=workflow_id, error=str(exc))
 
 

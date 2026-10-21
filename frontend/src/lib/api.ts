@@ -5,7 +5,7 @@ export type CountryCode = "us" | "uae";
 export type WorkflowStatus = "queued" | "running" | "completed" | "failed" | "blocked" | "interrupted";
 
 export const STATUS_CONFIG: Record<WorkflowStatus, { label: string; cls: string }> = {
-  completed:   { label: "PASS",    cls: "badge-pass"  },
+  completed:   { label: "DONE",    cls: "badge-blue"  },
   blocked:     { label: "BLOCK",   cls: "badge-block" },
   failed:      { label: "FAIL",    cls: "badge-block" },
   running:     { label: "RUNNING", cls: "badge-blue"  },

@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import os
+import sys
 from contextlib import asynccontextmanager
 
 import structlog
@@ -24,6 +25,12 @@ from routes.workflow import mark_interrupted_runs, router as workflow_router
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
+# Windows consoles default to a legacy code page; without this, log lines
+# containing characters like "→" or "≠" raise UnicodeEncodeError.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
 structlog.configure(
     processors=[
         structlog.contextvars.merge_contextvars,

@@ -1029,6 +1029,25 @@ export default function DeclarationPage({ runId, onBack }: DeclarationPageProps)
               </div>
             )}
 
+            {/* ── Failure reason ─────────────────────────────────────────── */}
+            {!isDemoMode && data?.status === "failed" && typeof result.error === "string" && (
+              <div role="alert" style={{
+                margin:          "16px 0",
+                padding:         "12px 14px",
+                backgroundColor: "rgba(220, 38, 38, 0.07)",
+                border:          "1px solid rgba(239,68,68,0.25)",
+                borderLeft:      "3px solid var(--accent-red)",
+                fontFamily:      "'JetBrains Mono', monospace",
+              }}>
+                <p style={{ fontSize: "0.62rem", fontWeight: 700, color: "var(--accent-red)", letterSpacing: "0.08em", margin: 0 }}>
+                  PIPELINE FAILED
+                </p>
+                <p style={{ fontSize: "0.63rem", color: "var(--text-secondary)", lineHeight: 1.5, marginTop: "6px", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                  {result.error}
+                </p>
+              </div>
+            )}
+
             {/* ── Empty state ────────────────────────────────────────────── */}
             {bboxes.length === 0 && !declaration?.invoice && !isDemoMode && (
               <div style={{

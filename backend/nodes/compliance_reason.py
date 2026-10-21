@@ -151,6 +151,10 @@ def compliance_reason_node(state: WorkflowState) -> WorkflowState:
         item = state.invoice.line_items[sel.line_item_index]
         item.hs_code = sel.selected_code
 
+        # Don't rely on the model setting the flag itself.
+        if sel.confidence < 0.5:
+            sel.flag_for_review = True
+
         # Update the winning candidate's confidence and rationale in-place.
         matched = False
         for c in item.hs_candidates:
