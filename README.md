@@ -158,7 +158,11 @@ Every workflow and upload is owned by the user who created it; other users get 4
    Use `dev.py` rather than `uvicorn --reload`, which hangs on Windows once Docling/PyTorch is loaded.
 3. Open http://localhost:3000 and sign in with Google.
 
-### Docker Compose
+### Deploy online (free Oracle Cloud server, HTTPS)
+Step-by-step guide: [`deploy/README.md`](deploy/README.md). It runs a single production
+image (backend serving the built frontend) behind Caddy for automatic HTTPS.
+
+### Docker Compose (local, multi-service)
 ```bash
 cp backend/.env.example backend/.env   # set GROQ_API_KEY
 export JWT_SECRET_KEY=... GRAFANA_ADMIN_PASSWORD=...

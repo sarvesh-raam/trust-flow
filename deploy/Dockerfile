@@ -1,9 +1,8 @@
-# Trust Flow — single-container image for a Hugging Face Docker Space.
+# Trust Flow — single production image: FastAPI backend + built frontend.
 #
-# Upload this file and README.md (same folder) to the Space. The image pulls
-# the app from GitHub, builds the frontend, and serves it from the FastAPI
-# backend on port 7860. To deploy new code: push to GitHub, then use
-# "Factory rebuild" in the Space settings.
+# Pulls the app from GitHub (so the build needs only this folder), builds the
+# frontend, and serves it from the backend on $PORT (default 8000).
+# Used by deploy/docker-compose.yml; see deploy/README.md.
 
 ARG REPO=https://github.com/sarvesh-raam/trust-flow.git
 ARG REF=main
@@ -32,7 +31,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libgl1 libglib2.0-0 libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Spaces run the container as uid 1000.
 RUN useradd -m -u 1000 user
 USER user
 ENV HOME=/home/user \
@@ -50,17 +48,18 @@ COPY --from=src --chown=user /src/country_rules/ /home/user/country_rules/
 COPY --from=frontend --chown=user /app/dist /home/user/frontend
 COPY --from=src --chown=user /src/test_docs/weight_conflict_set/invoice.pdf /tmp/warmup.pdf
 
-# Free Spaces have no persistent disk: data lives in the container and is
-# reset on restart. With paid persistent storage, point these at /data.
+# Database, uploads and paused-run checkpoints live under /home/user/data —
+# mount a volume there to keep them across restarts.
 ENV STATIC_DIR=/home/user/frontend \
     DATABASE_URL=sqlite:////home/user/data/hackstrom.db \
     CHECKPOINT_DB=/home/user/data/checkpoints.db \
     UPLOAD_DIR=/home/user/data/uploads \
-    COUNTRY_RULES_DIR=/home/user/country_rules
+    COUNTRY_RULES_DIR=/home/user/country_rules \
+    PORT=8000
 
 # Download Docling's layout/OCR models now, so the first upload isn't slow.
 RUN mkdir -p /home/user/data \
     && python -c "from nodes.ocr_extract import _CONVERTER; _CONVERTER.convert('/tmp/warmup.pdf'); print('docling models ready')"
 
-EXPOSE 7860
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7860", "--timeout-graceful-shutdown", "3"]
+EXPOSE 8000
+CMD ["sh", "-c", "exec uvicorn main:app --host 0.0.0.0 --port ${PORT} --timeout-graceful-shutdown 3"]
