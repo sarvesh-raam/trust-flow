@@ -26,6 +26,7 @@ from db import CHECKPOINT_DB, init_db
 from dependencies import get_current_user
 from graph import document_graph
 from routes.auth_routes import router as auth_router
+from routes.chat import router as chat_router
 from routes.logs import capture_log_event, router as logs_router
 from routes.upload import router as upload_router
 from routes.workflow import mark_interrupted_runs, router as workflow_router
@@ -120,6 +121,7 @@ Instrumentator(
 app.include_router(auth_router)
 app.include_router(upload_router, prefix="/api/v1/upload", tags=["upload"], dependencies=[Depends(get_current_user)])
 app.include_router(workflow_router, prefix="/api/v1/workflow", tags=["workflow"], dependencies=[Depends(get_current_user)])
+app.include_router(chat_router, prefix="/api/v1/workflow/chat", tags=["chat"], dependencies=[Depends(get_current_user)])
 # Auth is checked inside the route: EventSource can only send the token as ?token=.
 app.include_router(logs_router, prefix="/api/v1/logs", tags=["logs"])
 

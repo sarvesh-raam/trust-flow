@@ -167,4 +167,48 @@ export const resumeWorkflow = async (runId: string, corrections: ResumeCorrectio
   return data;
 };
 
+// ── Declaration chat ──────────────────────────────────────────────────────────
+
+export interface ProposedChange {
+  path: string;
+  value: string | number;
+  reason?: string;
+}
+
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+  proposals: ProposedChange[];
+  /** "pending" proposals can be applied or dismissed; edits never apply on their own. */
+  proposal_status: "none" | "pending" | "applied" | "dismissed";
+  created_at: string;
+}
+
+export const getChat = async (runId: string): Promise<ChatMessage[]> => {
+  const { data } = await api.get(`/workflow/chat/${runId}`);
+  return data.messages;
+};
+
+export const sendChat = async (runId: string, message: string): Promise<ChatMessage[]> => {
+  const { data } = await api.post(`/workflow/chat/${runId}`, { message });
+  return data.messages;
+};
+
+export const actOnProposal = async (
+  runId: string,
+  index: number,
+  action: "apply" | "dismiss",
+): Promise<ChatMessage[]> => {
+  const { data } = await api.post(`/workflow/chat/${runId}/proposals/${index}`, { action });
+  return data.messages;
+};
+
+/** FastAPI error detail as one readable string. */
+export function errorDetail(e: unknown, fallback: string): string {
+  const detail: unknown = axios.isAxiosError(e) ? e.response?.data?.detail : undefined;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) return detail.map((d: { msg?: string }) => d?.msg ?? String(d)).join("; ");
+  return fallback;
+}
+
 export { api };

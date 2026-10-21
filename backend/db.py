@@ -67,6 +67,9 @@ class WorkflowRunRow(SQLModel, table=True):
     status: str = SQLField(default="queued")
     result_json: str = SQLField(default="{}")
     steps_json: str = SQLField(default="[]")
+    # Declaration chat history; kept apart from result_json, which is
+    # rewritten every time the pipeline re-runs.
+    chat_json: str = SQLField(default="[]")
     created_at: datetime = SQLField(default_factory=datetime.utcnow)
     updated_at: datetime = SQLField(default_factory=datetime.utcnow)
 
@@ -84,3 +87,4 @@ def _ensure_column(table: str, column: str, ddl: str) -> None:
 def init_db() -> None:
     SQLModel.metadata.create_all(engine)
     _ensure_column("upload_runs", "user_id", "VARCHAR NOT NULL DEFAULT ''")
+    _ensure_column("workflow_runs", "chat_json", "VARCHAR NOT NULL DEFAULT '[]'")

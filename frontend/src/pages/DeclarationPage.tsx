@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import axios from "axios";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { getRunStatus, resumeWorkflow, type BBoxEntry, type ComplianceIssue, type WorkflowStep } from "@/lib/api";
+import { errorDetail, getRunStatus, resumeWorkflow, type BBoxEntry, type ComplianceIssue, type WorkflowStep } from "@/lib/api";
+import DeclarationChat from "@/components/DeclarationChat";
 import { buildCorrections, correctionFieldsFor, currentValue, type CorrectionField } from "@/lib/corrections";
 import PDFViewerPanel from "@/components/PDFViewerPanel";
 import { useDemoMode } from "@/demo/DemoContext";
@@ -536,6 +536,7 @@ interface DeclarationPageProps {
 export default function DeclarationPage({ runId, onBack }: DeclarationPageProps) {
   const [docSource,    setDocSource]    = useState<"invoice" | "bl">("invoice");
   const [expandedNode, setExpandedNode] = useState<string | null>(null);
+  const [rightTab,     setRightTab]     = useState<"trace" | "chat">("trace");
   const [correctionValues, setCorrectionValues] = useState<Record<string, string>>({});
   const [correctedCount,   setCorrectedCount]   = useState(0);
   const [resumeSubmitting, setResumeSubmitting] = useState(false);
@@ -632,13 +633,7 @@ export default function DeclarationPage({ runId, onBack }: DeclarationPageProps)
       // Status is now "running" server-side; refetching restarts polling.
       await queryClient.invalidateQueries({ queryKey: ["run-status", runId] });
     } catch (e) {
-      // FastAPI sends a string detail for our own errors, a list for body validation errors.
-      const detail: unknown = axios.isAxiosError(e) ? e.response?.data?.detail : undefined;
-      setResumeError(
-        typeof detail === "string" ? detail
-          : Array.isArray(detail) ? detail.map((d: { msg?: string }) => d?.msg ?? String(d)).join("; ")
-          : "Could not resume the workflow — please try again.",
-      );
+      setResumeError(errorDetail(e, "Could not resume the workflow — please try again."));
     } finally {
       setResumeSubmitting(false);
     }
@@ -1145,10 +1140,40 @@ export default function DeclarationPage({ runId, onBack }: DeclarationPageProps)
         }}>
           <PanelHeader
             accent="#a78bfa"
-            title="AGENT TRACE"
-            sub={steps.length > 0 ? `${steps.length} NODES` : undefined}
+            title={rightTab === "trace" ? "AGENT TRACE" : "ASSISTANT"}
+            sub={rightTab === "trace" && steps.length > 0 ? `${steps.length} NODES` : undefined}
+            right={
+              <div role="tablist" style={{ display: "flex", gap: "4px" }}>
+                {(["trace", "chat"] as const).map((t) => (
+                  <button
+                    key={t}
+                    role="tab"
+                    aria-selected={rightTab === t}
+                    onClick={() => setRightTab(t)}
+                    style={{
+                      fontFamily:      "'JetBrains Mono', monospace",
+                      fontSize:        "0.56rem",
+                      fontWeight:      700,
+                      letterSpacing:   "0.1em",
+                      padding:         "3px 8px",
+                      cursor:          "pointer",
+                      border:          `1px solid ${rightTab === t ? "#a78bfa" : "var(--border)"}`,
+                      backgroundColor: rightTab === t ? "rgba(167,139,250,0.12)" : "transparent",
+                      color:           rightTab === t ? "#a78bfa" : "var(--text-muted)",
+                    }}
+                  >
+                    {t.toUpperCase()}
+                  </button>
+                ))}
+              </div>
+            }
           />
 
+          {rightTab === "chat" ? (
+            <div style={{ flex: 1, minHeight: 0 }}>
+              <DeclarationChat runId={runId} runStatus={realData?.status} demo={isDemoMode} />
+            </div>
+          ) : (
           <div style={{
             flex:            1,
             overflowY:       "auto",
@@ -1191,6 +1216,7 @@ export default function DeclarationPage({ runId, onBack }: DeclarationPageProps)
               </div>
             )}
           </div>
+          )}
         </div>
 
       </div>

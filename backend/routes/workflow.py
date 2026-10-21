@@ -640,21 +640,51 @@ async def resume_workflow(
     user_id: str = Depends(get_current_user),
 ) -> WorkflowResponse:
     row = _get_owned(run_id, user_id)
-    if row.status != WorkflowStatus.BLOCKED.value:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Workflow is not blocked")
+    corrections = _collect_corrections(body)
+    row = await apply_corrections_and_rerun(
+        row, corrections, background_tasks, allowed=(WorkflowStatus.BLOCKED,),
+    )
+    log.info("workflow.resumed", workflow_id=run_id, corrected=sorted(corrections), user_id=user_id)
+    return WorkflowResponse(**_to_record(row).model_dump())
 
-    config = {"configurable": {"thread_id": run_id}}
-    snapshot = await document_graph.aget_state(config)
-    values = getattr(snapshot, "values", None)
+
+async def graph_values(run_id: str) -> dict[str, Any] | None:
+    """Latest checkpointed pipeline state for a run (None if not available)."""
+    snapshot = await document_graph.aget_state({"configurable": {"thread_id": run_id}})
+    return getattr(snapshot, "values", None) or None
+
+
+async def apply_corrections_and_rerun(
+    row: WorkflowRunRow,
+    corrections: dict[str, Any],
+    background_tasks: BackgroundTasks,
+    allowed: tuple[WorkflowStatus, ...],
+) -> WorkflowRunRow:
+    """Apply operator corrections and re-run validation onwards.
+
+    Shared by the HITL resume route and the declaration chat. Works for a
+    paused (BLOCKED) run and for a finished (COMPLETED) one: the update is
+    written "as" compliance_reason, so deterministic_validate,
+    country_validate and declaration_generate all run again on the corrected
+    data — the run either completes with a fresh declaration or blocks again.
+    """
+    run_id = row.id
+    if row.status not in {s.value for s in allowed}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Corrections can't be applied while the workflow is {row.status}",
+        )
+    if not corrections:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="No corrections supplied")
+
+    values = await graph_values(run_id)
     if not values:
         raise HTTPException(
             status_code=status.HTTP_410_GONE,
-            detail="Paused graph state is no longer available — please start a new run",
+            detail="The run's pipeline state is no longer available — please start a new run",
         )
+    config = {"configurable": {"thread_id": run_id}}
 
-    corrections = _collect_corrections(body)
-    if not corrections:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="No corrections supplied")
     invoice, bl = _apply_corrections(
         _as_model(InvoiceDocument, values.get("invoice")),
         _as_model(BillOfLading, values.get("bill_of_lading")),
@@ -677,8 +707,7 @@ async def resume_workflow(
     row = _save(run_id, WorkflowStatus.RUNNING) or row
     HITL_RESUMES_TOTAL.inc()
     background_tasks.add_task(_resume_graph, workflow_id=run_id)
-    log.info("workflow.resumed", workflow_id=run_id, corrected=sorted(corrections), user_id=user_id)
-    return WorkflowResponse(**_to_record(row).model_dump())
+    return row
 
 
 @router.get(
