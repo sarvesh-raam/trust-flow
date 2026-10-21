@@ -20,6 +20,7 @@ import structlog
 import uvicorn
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from prometheus_fastapi_instrumentator import Instrumentator
 
 from db import CHECKPOINT_DB, init_db
@@ -132,6 +133,19 @@ app.include_router(logs_router, prefix="/api/v1/logs", tags=["logs"])
 @app.get("/health", tags=["meta"])
 async def health() -> dict:
     return {"status": "ok", "version": "0.1.0"}
+
+
+# ---------------------------------------------------------------------------
+# Built frontend (single-container deployments, e.g. Hugging Face Spaces)
+# ---------------------------------------------------------------------------
+# Mounted last so every API route above takes precedence over the static files.
+_STATIC_DIR = os.getenv("STATIC_DIR", "").strip()
+if _STATIC_DIR:
+    if os.path.isdir(_STATIC_DIR):
+        app.mount("/", StaticFiles(directory=_STATIC_DIR, html=True), name="frontend")
+        log.info("frontend.served", path=_STATIC_DIR)
+    else:
+        log.warning("frontend.static_dir_missing", path=_STATIC_DIR)
 
 
 # ---------------------------------------------------------------------------
