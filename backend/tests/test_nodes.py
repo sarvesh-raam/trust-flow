@@ -64,3 +64,30 @@ def test_readable_error_extracts_instructor_last_exception():
 
 def test_readable_error_passes_plain_messages_through():
     assert _readable_error(ValueError("OCR could not read the invoice")) == "OCR could not read the invoice"
+
+
+# ── HS code ranking (USITC search rows) ──────────────────────────────────────
+
+from nodes.hs_retrieve import _rank_usitc_rows  # noqa: E402
+
+_USITC_ROWS = [
+    {"htsno": "8413", "indent": "0", "description": "Pumps for liquids; liquid elevators:"},
+    {"htsno": "8413.70", "indent": "1", "description": "Other centrifugal pumps:"},
+    {"htsno": "8413.70.20.04", "indent": "2", "description": "Submersible pumps"},
+    {"htsno": "9303", "indent": "0", "description": "Other firearms (sporting shotguns)"},
+    {"htsno": "9303.20.00.30", "indent": "1", "description": "Exceeding <il>500 cc</il> > Pump action"},
+    {"htsno": "4202", "indent": "0", "description": "Trunks, suitcases"},
+    {"htsno": "4202.21.60.00", "indent": "1", "description": "Handbags with outer surface of leather"},
+]
+
+
+def test_hs_ranking_uses_heading_path_and_ignores_model_numbers():
+    codes = [c.code for c in _rank_usitc_rows(_USITC_ROWS, "Industrial Centrifugal Pump CP-500", 5)]
+    assert codes[0] == "8413702004"              # matched "centrifugal" + "pump" via parents
+    assert "9303200030" not in codes             # "pump action" alone is below the threshold
+
+
+def test_hs_ranking_resets_context_at_each_heading():
+    [only] = _rank_usitc_rows(_USITC_ROWS, "leather handbags", 5)
+    assert only.code == "4202216000"
+    assert "firearm" not in only.description.lower()
