@@ -11,7 +11,7 @@ if (-not (Test-Path '.venv')) {
 }
 .\.venv\Scripts\Activate.ps1
 pip install -q -r requirements.txt
-uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+python dev.py
 "@
 
 Start-Process powershell -ArgumentList "-NoExit", "-Command", $backendScript `

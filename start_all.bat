@@ -5,7 +5,7 @@
 set ROOT=%~dp0
 
 echo [hackstrom] Starting Backend ^(http://localhost:8000^)...
-start "HACKSTROM BACKEND" cmd /k "cd /d %ROOT%backend && (if not exist .venv python -m venv .venv) && .venv\Scripts\activate && pip install -q -r requirements.txt && uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
+start "HACKSTROM BACKEND" cmd /k "cd /d %ROOT%backend && (if not exist .venv python -m venv .venv) && .venv\Scripts\activate && pip install -q -r requirements.txt && python dev.py"
 
 echo [hackstrom] Starting Frontend ^(http://localhost:3000^)...
 start "HACKSTROM FRONTEND" cmd /k "cd /d %ROOT%frontend && (if not exist node_modules npm install) && npm run dev"

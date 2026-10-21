@@ -16,7 +16,7 @@ if [ ! -d ".venv" ]; then
 else
   source .venv/bin/activate
 fi
-uvicorn main:app --host 0.0.0.0 --port 8000 --reload &
+python dev.py &
 BACKEND_PID=$!
 echo "[hackstrom] Backend PID: $BACKEND_PID"
 

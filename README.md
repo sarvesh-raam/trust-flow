@@ -154,6 +154,8 @@ Every workflow and upload is owned by the user who created it; other users get 4
 ### Local (Windows / macOS / Linux)
 1. `cp backend/.env.example backend/.env` and set at least `GROQ_API_KEY` and `JWT_SECRET_KEY`.
 2. Start both servers: double-click `start_all.bat` (Windows), or run `./start_all.ps1` / `./start_all.sh`.
+   To run only the backend: `cd backend` then `python dev.py` (restarts on code changes).
+   Use `dev.py` rather than `uvicorn --reload`, which hangs on Windows once Docling/PyTorch is loaded.
 3. Open http://localhost:3000 and sign in with Google.
 
 ### Docker Compose

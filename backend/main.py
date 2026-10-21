@@ -1,12 +1,18 @@
 """Hackstrom Track 3 — FastAPI entrypoint."""
 from __future__ import annotations
 
+import os
+
+# Must run before anything imports PyTorch (pulled in by Docling): its Intel
+# Fortran runtime installs a console Ctrl+C handler that swallows the event
+# `uvicorn --reload` uses on Windows to stop the old worker, so reloads hang.
+os.environ.setdefault("FOR_DISABLE_CONSOLE_CTRL_HANDLER", "1")
+
 # Load .env before any other application imports so that os.getenv() calls in
 # sub-modules (graph.py, nodes/field_extract.py, db.py …) see the values.
 from dotenv import load_dotenv
 load_dotenv()
 
-import os
 import sys
 from contextlib import asynccontextmanager
 
@@ -127,7 +133,7 @@ async def health() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Dev entrypoint
+# Plain entrypoint (no auto-restart — use `python dev.py` while developing)
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run(app, host="0.0.0.0", port=8000, timeout_graceful_shutdown=3)
