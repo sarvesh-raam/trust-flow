@@ -1,5 +1,6 @@
 import jwt
 import os
+import secrets
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -7,10 +8,40 @@ import structlog
 
 log = structlog.get_logger(__name__)
 
-_DEFAULT_SECRET = "hackstrom-secret-change-in-prod"
-SECRET_KEY = os.getenv("JWT_SECRET_KEY") or _DEFAULT_SECRET
-if SECRET_KEY == _DEFAULT_SECRET:
-    log.warning("auth.default_jwt_secret", hint="set JWT_SECRET_KEY before deploying")
+# Example values that appear in this repo's docs/manifests — signing with any
+# of them would let anyone forge a login token.
+_PLACEHOLDER_SECRETS = {
+    "change-me",
+    "hackstrom-secret-change-in-prod",
+    "hackstrom-secret-key-2026",
+    "your_jwt_secret_key_here",
+}
+_MIN_SECRET_LENGTH = 32
+
+
+def _load_secret() -> str:
+    """JWT signing key from JWT_SECRET_KEY.
+
+    Unset → a random per-process key (fine for local dev: tokens just stop
+    working after a restart and the frontend re-logs in).  A known placeholder
+    or a short key → refuse to start rather than issue forgeable tokens.
+    """
+    secret = os.getenv("JWT_SECRET_KEY", "").strip()
+    if not secret:
+        log.warning(
+            "auth.random_jwt_secret",
+            hint="JWT_SECRET_KEY is not set; using a random key for this process only",
+        )
+        return secrets.token_urlsafe(48)
+    if secret in _PLACEHOLDER_SECRETS or len(secret) < _MIN_SECRET_LENGTH:
+        raise RuntimeError(
+            f"JWT_SECRET_KEY is a placeholder or shorter than {_MIN_SECRET_LENGTH} characters. "
+            'Generate one with: python -c "import secrets; print(secrets.token_urlsafe(48))"'
+        )
+    return secret
+
+
+SECRET_KEY = _load_secret()
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 REFRESH_TOKEN_EXPIRE_DAYS = 7

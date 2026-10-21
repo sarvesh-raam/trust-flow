@@ -118,9 +118,7 @@ function Label({ children }: { children: React.ReactNode }) {
   );
 }
 
-interface UploadPageProps {}
-
-export default function UploadPage({}: UploadPageProps) {
+export default function UploadPage() {
   const [invoiceFile, setInvoiceFile] = useState<File | null>(null);
   const [blFile,      setBlFile]      = useState<File | null>(null);
   const [lastDocId,   setLastDocId]   = useState<string | null>(null);

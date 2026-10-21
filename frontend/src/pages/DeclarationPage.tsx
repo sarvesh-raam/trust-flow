@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import axios from "axios";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getRunStatus, resumeWorkflow, type BBoxEntry, type ComplianceIssue, type WorkflowStep } from "@/lib/api";
 import { buildCorrections, correctionFieldsFor, currentValue, type CorrectionField } from "@/lib/corrections";
@@ -630,11 +631,12 @@ export default function DeclarationPage({ runId, onBack }: DeclarationPageProps)
       setResumeSubmitted(true);
       // Status is now "running" server-side; refetching restarts polling.
       await queryClient.invalidateQueries({ queryKey: ["run-status", runId] });
-    } catch (e: any) {
-      const detail = e?.response?.data?.detail;
+    } catch (e) {
+      // FastAPI sends a string detail for our own errors, a list for body validation errors.
+      const detail: unknown = axios.isAxiosError(e) ? e.response?.data?.detail : undefined;
       setResumeError(
         typeof detail === "string" ? detail
-          : Array.isArray(detail) ? detail.map((d: any) => d?.msg ?? String(d)).join("; ")
+          : Array.isArray(detail) ? detail.map((d: { msg?: string }) => d?.msg ?? String(d)).join("; ")
           : "Could not resume the workflow — please try again.",
       );
     } finally {
@@ -1110,7 +1112,7 @@ export default function DeclarationPage({ runId, onBack }: DeclarationPageProps)
             {/* ── DEMO HITL: Human Review Panel ──────────────────────────── */}
             {(needsHITL || isResuming || (isDemoMode && demoPhase === "completed") || (!isDemoMode && realPhase === "completed")) && (
               <HitlPanel
-                phase={currentPhase as any}
+                phase={currentPhase}
                 issues={blockingIssues}
                 fields={correctionFields}
                 values={correctionValues}

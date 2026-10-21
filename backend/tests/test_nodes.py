@@ -91,3 +91,28 @@ def test_hs_ranking_resets_context_at_each_heading():
     [only] = _rank_usitc_rows(_USITC_ROWS, "leather handbags", 5)
     assert only.code == "4202216000"
     assert "firearm" not in only.description.lower()
+
+
+# ── JWT secret loading ───────────────────────────────────────────────────────
+
+import pytest  # noqa: E402
+
+import auth  # noqa: E402
+
+
+@pytest.mark.parametrize("value", ["change-me", "hackstrom-secret-key-2026", "short-but-real"])
+def test_placeholder_or_short_jwt_secret_is_refused(monkeypatch, value):
+    monkeypatch.setenv("JWT_SECRET_KEY", value)
+    with pytest.raises(RuntimeError, match="JWT_SECRET_KEY"):
+        auth._load_secret()
+
+
+def test_missing_jwt_secret_gets_a_random_key(monkeypatch):
+    monkeypatch.delenv("JWT_SECRET_KEY", raising=False)
+    first, second = auth._load_secret(), auth._load_secret()
+    assert len(first) >= 32 and first != second
+
+
+def test_strong_jwt_secret_is_used_as_is(monkeypatch):
+    monkeypatch.setenv("JWT_SECRET_KEY", "k" * 40)
+    assert auth._load_secret() == "k" * 40

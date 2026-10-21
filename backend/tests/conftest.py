@@ -11,7 +11,7 @@ _TMP = Path(tempfile.mkdtemp(prefix="trustflow-tests-"))
 os.environ["DATABASE_URL"] = f"sqlite:///{(_TMP / 'test.db').as_posix()}"
 os.environ["UPLOAD_DIR"] = str(_TMP / "uploads")
 os.environ["CHECKPOINT_DB"] = str(_TMP / "checkpoints.db")
-os.environ["JWT_SECRET_KEY"] = "test-secret"
+os.environ["JWT_SECRET_KEY"] = "test-secret-" + "x" * 32
 os.environ.pop("GROQ_API_KEY", None)
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent

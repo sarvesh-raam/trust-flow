@@ -1,4 +1,4 @@
-import type { ComplianceIssue } from "./api";
+import type { ApiJson, ComplianceIssue } from "./api";
 
 /** One input in the human-review panel, keyed by the backend correction path. */
 export interface CorrectionField {
@@ -67,7 +67,7 @@ export function correctionFieldsFor(issues: ComplianceIssue[]): CorrectionField[
 }
 
 /** Current extracted value for a path, as a string for an input box. */
-export function currentValue(result: Record<string, any>, path: string): string {
+export function currentValue(result: ApiJson, path: string): string {
   const hs = HS_PATH.exec(path);
   const value = hs
     ? result.invoice?.line_items?.[Number(hs[1])]?.hs_code

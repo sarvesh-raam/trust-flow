@@ -183,9 +183,10 @@ Set real values in `k8s/01-secrets.yaml` first. The backend runs as a single rep
 
 ### Tests
 ```bash
-cd backend && .venv/Scripts/python -m pytest tests     # or .venv/bin/python on macOS/Linux
-cd frontend && npx tsc --noEmit
+cd backend && pip install -r requirements-dev.txt && python -m pytest tests
+cd frontend && npm run lint && npm run build
 ```
+GitHub Actions runs the same checks on every push to `main` and on pull requests (`.github/workflows/ci.yml`).
 
 ---
 

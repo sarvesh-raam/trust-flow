@@ -2,6 +2,10 @@ import axios, { type AxiosRequestConfig } from "axios";
 import { auth, type User } from "./firebase";
 
 export type CountryCode = "us" | "uae";
+
+/** Loosely-typed JSON from the API — a run's `result` shape depends on its state. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type ApiJson = Record<string, any>;
 export type WorkflowStatus = "queued" | "uploaded" | "running" | "completed" | "failed" | "blocked" | "interrupted";
 
 export const STATUS_CONFIG: Record<WorkflowStatus, { label: string; cls: string }> = {
@@ -19,7 +23,7 @@ export interface WorkflowStep {
   status: "pending" | "running" | "completed" | "failed" | "blocked" | "interrupted" | "queued";
   started_at?: string | null;
   completed_at?: string | null;
-  output?: Record<string, any> & { reasoning_note?: string | null };
+  output?: ApiJson & { reasoning_note?: string | null };
   error?: string | null;
 }
 
@@ -46,7 +50,7 @@ export interface WorkflowResponse {
   updated_at?: string;
   document_id?: string;
   steps: WorkflowStep[];
-  result: Record<string, any>;
+  result: ApiJson;
   bboxes?: BBoxEntry[];
 }
 
@@ -121,8 +125,10 @@ export const createGuestSession = async () => {
       JSON.stringify({ displayName: "Local Guest", email: "guest@local", photoURL: null }),
     );
     return data;
-  } catch (e: any) {
-    if (e?.response?.status === 403) throw new Error("Guest login is disabled on this server.");
+  } catch (e) {
+    if (axios.isAxiosError(e) && e.response?.status === 403) {
+      throw new Error("Guest login is disabled on this server.");
+    }
     throw e;
   }
 };
