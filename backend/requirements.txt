@@ -1,24 +1,36 @@
-fastapi>=0.111.0
-uvicorn[standard]>=0.29.0
-pydantic[v2]>=2.7.0
-langgraph>=1.1.6,<2
-langgraph-checkpoint-sqlite>=3.0,<4
-aiosqlite>=0.20
-sqlmodel>=0.0.18
-httpx>=0.27.0
-structlog>=24.1.0
-instructor>=1.3.0
-docling>=2.0.0
-pymupdf>=1.24.0        # used by scripts/generate_test_docs.py
-pillow>=10.3.0
-python-multipart>=0.0.9
-aiofiles>=23.2.1
-pyyaml>=6.0.1
-python-dotenv>=1.0.0
-groq>=0.9.0
-google-auth>=2.29.0    # Firebase ID token verification
-requests>=2.31.0       # transport for google-auth
-PyJWT==2.8.0
-cryptography==42.0.5
+# Pinned to the versions the test suite passes with. Unpinned (>=) installs
+# pulled newer FastAPI/Starlette releases that broke the metrics middleware.
+# To upgrade: bump a version, run `python -m pytest tests`, commit if green.
+
+# Web / API
+fastapi==0.136.0
+starlette==1.0.0
+uvicorn[standard]==0.44.0
+watchfiles==1.1.1          # dev.py auto-restart
+python-multipart==0.0.26
+aiofiles==25.1.0
+httpx==0.28.1
+pydantic==2.13.1
+sqlmodel==0.0.38
+structlog==25.5.0
+python-dotenv==1.2.2
+pyyaml==6.0.3
 prometheus-fastapi-instrumentator==6.1.0   # GET /metrics
 prometheus-client==0.20.0
+
+# Pipeline
+langgraph==1.1.6
+langgraph-checkpoint-sqlite==3.1.2
+aiosqlite==0.22.1
+docling==2.89.0
+instructor==1.15.1
+groq==1.1.2
+openai==2.32.0             # local vLLM fallback client
+pillow==12.2.0
+pymupdf==1.27.2.2          # used by scripts/generate_test_docs.py
+
+# Auth
+google-auth==2.62.0        # Firebase ID token verification
+requests==2.33.1           # transport for google-auth
+PyJWT==2.8.0
+cryptography==42.0.5
