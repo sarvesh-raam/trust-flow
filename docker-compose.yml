@@ -6,7 +6,7 @@ services:
       - "8000:8000"
     environment:
       - GROQ_API_KEY=${GROQ_API_KEY}
-      - GROQ_MODEL=${GROQ_MODEL:-llama-3.3-70b-versatile}
+      - GROQ_MODEL=${GROQ_MODEL:-openai/gpt-oss-120b}
       - DATABASE_URL=sqlite:///./data/hackstrom.db
       - CHECKPOINT_DB=/app/data/checkpoints.db
       - UPLOAD_DIR=/app/uploads

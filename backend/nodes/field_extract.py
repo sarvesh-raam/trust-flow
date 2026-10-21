@@ -1,6 +1,6 @@
 """nodes/field_extract.py — LLM-based structured extraction via Instructor.
 
-Uses Groq (llama-3.3-70b) when GROQ_API_KEY is set, otherwise falls back to a
+Uses Groq (openai/gpt-oss-120b) when GROQ_API_KEY is set, otherwise falls back to a
 locally-hosted vLLM server (Qwen2.5-7B-Instruct at http://localhost:8001/v1).
 
 The Instructor library wraps the OpenAI-compatible chat endpoint and retries
@@ -26,7 +26,7 @@ log = structlog.get_logger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-GROQ_MODEL_DEFAULT  = "llama-3.3-70b-versatile"
+GROQ_MODEL_DEFAULT  = "openai/gpt-oss-120b"
 VLLM_MODEL_DEFAULT  = "Qwen/Qwen2.5-7B-Instruct"
 VLLM_BASE_URL_DEFAULT = "http://localhost:8001/v1"
 
@@ -40,7 +40,7 @@ def get_client() -> Any:
     """Return a patched Instructor client.
 
     Priority:
-      1. GROQ_API_KEY set → Groq cloud (llama-3.3-70b-versatile)
+      1. GROQ_API_KEY set → Groq cloud (openai/gpt-oss-120b)
       2. Otherwise        → local vLLM (OpenAI-compatible endpoint)
     """
     groq_key = os.getenv("GROQ_API_KEY", "").strip()

@@ -283,8 +283,10 @@ function HitlPanel({
   invoiceWeight,
   blWeight,
   error,
+  finalStatus,
 }: {
   phase: "blocked" | "resuming" | "completed";
+  finalStatus?: string;
   correctedWeight: string;
   onWeightChange: (v: string) => void;
   onSubmit: () => void;
@@ -317,7 +319,7 @@ function HitlPanel({
               CORRECTIONS ACCEPTED — PIPELINE RESUMED
             </p>
             <p style={{ fontFamily: mono, fontSize: "0.6rem", color: "var(--text-secondary)", marginTop: "3px" }}>
-              Gross weight updated to 860 kg · Compliance status: PASS
+              Gross weight updated to {correctedWeight} kg · Compliance status: {finalStatus ?? "—"}
             </p>
           </div>
         </div>
@@ -567,6 +569,8 @@ export default function DeclarationPage({ runId, onBack }: DeclarationPageProps)
         : "blocked";
   const blockingIssue = (result.blocking_issues?.[0] ?? result.issues?.[0]) as ComplianceIssue | undefined;
   const realInvoiceWeight = result.invoice?.gross_weight_kg as number | undefined;
+  const shownInvoiceWeight = isDemoMode ? 820 : realInvoiceWeight;
+  const shownBlWeight      = isDemoMode ? 860 : (result.bill_of_lading?.gross_weight_kg as number | undefined);
 
   // Pre-fill the correction with the invoice weight the first time it is known.
   useEffect(() => {
@@ -865,7 +869,7 @@ export default function DeclarationPage({ runId, onBack }: DeclarationPageProps)
                       }}>
                         {issue.message}
                       </p>
-                      {isWeightConflict && isBlock && (
+                      {isWeightConflict && isBlock && !!shownInvoiceWeight && !!shownBlWeight && (
                         <div style={{
                           marginTop:       "6px",
                           padding:         "5px 8px",
@@ -876,8 +880,10 @@ export default function DeclarationPage({ runId, onBack }: DeclarationPageProps)
                           color:           "#fca5a5",
                           letterSpacing:   "0.04em",
                         }}>
-                          Invoice: 820 kg&nbsp;&nbsp;≠&nbsp;&nbsp;B/L: 860 kg&nbsp;&nbsp;
-                          <span style={{ color: "var(--accent-red)", fontWeight: 700 }}>(Δ 40 kg)</span>
+                          Invoice: {shownInvoiceWeight} kg&nbsp;&nbsp;≠&nbsp;&nbsp;B/L: {shownBlWeight} kg&nbsp;&nbsp;
+                          <span style={{ color: "var(--accent-red)", fontWeight: 700 }}>
+                            (Δ {Math.abs(shownInvoiceWeight - shownBlWeight)} kg)
+                          </span>
                         </div>
                       )}
                     </div>
@@ -1046,9 +1052,10 @@ export default function DeclarationPage({ runId, onBack }: DeclarationPageProps)
                 correctedWeight={correctedWeight}
                 onWeightChange={setCorrectedWeight}
                 issue={isDemoMode ? DEMO_WORKFLOW.compliance_issues[0] : blockingIssue}
-                invoiceWeight={isDemoMode ? 820 : realInvoiceWeight}
-                blWeight={isDemoMode ? 860 : result.bill_of_lading?.gross_weight_kg}
+                invoiceWeight={shownInvoiceWeight}
+                blWeight={shownBlWeight}
                 error={isDemoMode ? null : resumeError}
+                finalStatus={compStatus}
                 onSubmit={async () => {
                   if (isDemoMode) {
                     submitCorrections(parseFloat(correctedWeight) || 860);
