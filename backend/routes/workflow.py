@@ -349,7 +349,20 @@ def _readable_error(exc: Exception) -> str:
 
 
 async def _drive_graph(workflow_id: str, graph_input: GraphState | None) -> None:
-    """Run (graph_input) or resume (None) the graph and record the outcome."""
+    """Run (graph_input) or resume (None) the graph and record the outcome.
+
+    Every log line emitted while the run executes carries its owner's user_id,
+    which the live log stream uses to show users only their own runs.
+    """
+    with DBSession(engine) as session:
+        row = session.get(WorkflowRunRow, workflow_id)
+    with structlog.contextvars.bound_contextvars(
+        user_id=row.user_id if row else "", workflow_id=workflow_id,
+    ):
+        await _drive_graph_logged(workflow_id, graph_input)
+
+
+async def _drive_graph_logged(workflow_id: str, graph_input: GraphState | None) -> None:
     config = {"configurable": {"thread_id": workflow_id}}
     try:
         result = await document_graph.ainvoke(graph_input, config)
@@ -464,7 +477,7 @@ async def create_workflow(
         bl_pdf_path=upload_row.bl_path,
     )
 
-    log.info("workflow.queued", workflow_id=workflow_id, document_id=run_id_str)
+    log.info("workflow.queued", workflow_id=workflow_id, document_id=run_id_str, user_id=user_id)
     return WorkflowResponse(**_to_record(row).model_dump())
 
 
@@ -664,7 +677,7 @@ async def resume_workflow(
     row = _save(run_id, WorkflowStatus.RUNNING) or row
     HITL_RESUMES_TOTAL.inc()
     background_tasks.add_task(_resume_graph, workflow_id=run_id)
-    log.info("workflow.resumed", workflow_id=run_id, corrected=sorted(corrections))
+    log.info("workflow.resumed", workflow_id=run_id, corrected=sorted(corrections), user_id=user_id)
     return WorkflowResponse(**_to_record(row).model_dump())
 
 

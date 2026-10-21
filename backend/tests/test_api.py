@@ -264,3 +264,42 @@ def test_metrics_endpoint_counts_pipeline_runs(client, fake_docs):
 def test_log_stream_requires_a_valid_token(client):
     assert client.get("/api/v1/logs/stream", params={"token": "nope"}).status_code == 401
     assert client.get("/api/v1/logs/stream").status_code == 422
+
+
+def test_log_stream_only_shows_the_callers_own_events(client, fake_docs, monkeypatch):
+    import asyncio
+
+    import structlog
+
+    import graph
+    from routes import logs
+
+    real_ocr = graph._ocr_extract_impl
+
+    def logging_ocr(state):  # runs in an executor thread, like real OCR
+        structlog.get_logger().info("test.ocr_in_thread")
+        return real_ocr(state)
+
+    monkeypatch.setattr(graph, "_ocr_extract_impl", logging_ocr)
+    run_id, _ = _start_run(client, "alice")
+
+    thread_events = [e for e in logs._LOG_BUFFER if e["event"] == "test.ocr_in_thread"]
+    assert thread_events and thread_events[-1]["user_id"] == "alice"
+    assert thread_events[-1]["workflow_id"] == run_id
+
+    def token_for(user):
+        return auth_headers(user)["Authorization"].removeprefix("Bearer ")
+
+    async def first_event(user):
+        resp = await logs.stream_logs(token_for(user))
+        body = resp.body_iterator
+        try:
+            return await asyncio.wait_for(body.__anext__(), timeout=0.5)
+        except asyncio.TimeoutError:
+            return None
+        finally:
+            await body.aclose()
+
+    alice_first = asyncio.run(first_event("alice"))
+    assert alice_first and '"user_id": "alice"' in alice_first
+    assert asyncio.run(first_event("mallory")) is None

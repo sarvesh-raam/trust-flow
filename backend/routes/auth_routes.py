@@ -40,7 +40,7 @@ async def google_login(req: FirebaseTokenRequest):
     if req.firebase_token == GUEST_TOKEN:
         if not ALLOW_GUEST_LOGIN:
             raise HTTPException(403, "Guest login is disabled on this server")
-        log.info("auth.guest_login")
+        log.info("auth.guest_login", user_id=GUEST_USER_ID)
         return TokenResponse(
             access_token=create_access_token(GUEST_USER_ID, "guest@local"),
             refresh_token=create_refresh_token(GUEST_USER_ID),

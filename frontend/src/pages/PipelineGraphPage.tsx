@@ -176,7 +176,12 @@ export default function PipelineGraphPage() {
   const rfNodes: Node<PipelineNodeData>[] = useMemo(() =>
     NODES_DEF.map((n) => {
       const step = stepMap[n.id];
-      const status: NodeStatus = step?.status ?? "idle";
+      // interrupt_node raises instead of returning, so it never appears in the
+      // audit trail — show it from the run status while the run is paused.
+      const status: NodeStatus =
+        n.id === "interrupt_node" && selectedWorkflow?.status === "blocked"
+          ? "blocked"
+          : step?.status ?? "idle";
       return {
         id: n.id,
         type: "pipelineNode",
@@ -189,7 +194,7 @@ export default function PipelineGraphPage() {
         draggable: false,
       };
     }),
-    [stepMap],
+    [stepMap, selectedWorkflow?.status],
   );
 
   // Build ReactFlow edges

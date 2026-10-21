@@ -35,6 +35,7 @@ checkpointer so paused runs survive a restart.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import os
 import re
 import time
@@ -147,6 +148,17 @@ def _now_ms() -> float:
 
 def _elapsed(start_ms: float) -> float:
     return _now_ms() - start_ms
+
+
+async def _in_thread(fn: Any, *args: Any) -> Any:
+    """Run a blocking node implementation in the default executor.
+
+    run_in_executor does not carry contextvars into the worker thread, so the
+    current context is copied explicitly — otherwise log lines from OCR/LLM
+    calls lose the run's bound user_id/workflow_id (used by the log stream).
+    """
+    ctx = contextvars.copy_context()
+    return await asyncio.get_running_loop().run_in_executor(None, ctx.run, fn, *args)
 
 
 def _emit(
@@ -292,10 +304,7 @@ async def ocr_extract(state: GraphState) -> dict[str, Any]:
     """
     t0 = _now_ms()
 
-    loop = asyncio.get_running_loop()
-    updated: WorkflowState = await loop.run_in_executor(
-        None, _ocr_extract_impl, state
-    )
+    updated: WorkflowState = await _in_thread(_ocr_extract_impl, state)
 
     OCR_CONFIDENCE.observe(updated.ocr_confidence)
     inv_chars = len(updated.invoice_ocr_text or "")
@@ -384,8 +393,7 @@ async def field_extract(state: GraphState) -> dict[str, Any]:
     inv_chars = len(state.invoice_ocr_text or "")
     bl_chars  = len(state.bl_ocr_text  or "")
 
-    loop    = asyncio.get_event_loop()
-    updated: GraphState = await loop.run_in_executor(None, _field_extract_impl, state)
+    updated: GraphState = await _in_thread(_field_extract_impl, state)
 
     invoice = updated.invoice
     bl      = updated.bill_of_lading
@@ -521,8 +529,7 @@ async def compliance_reason(state: GraphState) -> dict[str, Any]:
         )
 
     n_items = len(state.invoice.line_items)
-    loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, _compliance_reason_impl, state)
+    await _in_thread(_compliance_reason_impl, state)
 
     # ── Surface flag_for_review items as WARN compliance issues ──────────────
     selections = state.__dict__.pop("_hs_selections", [])

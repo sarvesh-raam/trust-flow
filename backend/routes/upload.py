@@ -130,6 +130,7 @@ async def upload_documents(
     log.info(
         "documents.uploaded",
         run_id=run_id,
+        user_id=user_id,
         invoice=invoice_pdf.filename,
         bl=bl_pdf.filename,
         country=country,
