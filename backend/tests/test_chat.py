@@ -128,6 +128,25 @@ def test_dismissing_changes_nothing(client, fake_docs, fake_llm):
     assert _status(client, run_id)["result"]["declaration"]["invoice"]["buyer"] == "Globex LLC"
 
 
+def test_applying_while_a_question_is_answered_is_not_lost(client, fake_docs, fake_llm, monkeypatch):
+    """Saving a slow answer must not reset a proposal applied in the meantime."""
+    from routes import chat
+
+    run_id, _ = _start_run(client)
+    fake_llm["plan"] = _plan("Proposed.", ("invoice.seller", "Acme Ltd"))
+    _say(client, run_id, "change seller")
+
+    def slow_answer(context, editable, history, message):
+        # The user presses APPLY while the model is still answering.
+        assert _act(client, run_id, 1, "apply").status_code == 200
+        return chat.ChatPlan(reply="Here is the answer.")
+
+    monkeypatch.setattr(chat, "plan_chat_reply", slow_answer)
+    msgs = _say(client, run_id, "another question").json()["messages"]
+    assert len(msgs) == 4
+    assert msgs[1]["proposal_status"] == "applied"
+
+
 def test_assistant_failure_returns_502_and_saves_nothing(client, fake_docs, fake_llm):
     run_id, _ = _start_run(client)
     fake_llm["plan"] = RuntimeError("groq down")

@@ -10,6 +10,7 @@ from typing import Any
 import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from pydantic import BaseModel, Field, ValidationError
+from sqlalchemy import update
 from sqlmodel import Session as DBSession, select
 
 from db import UploadRunRow, WorkflowRunRow, engine
@@ -671,6 +672,19 @@ async def graph_values(run_id: str) -> dict[str, Any] | None:
     return getattr(snapshot, "values", None) or None
 
 
+def _claim_for_rerun(run_id: str, allowed: tuple[WorkflowStatus, ...]) -> bool:
+    """Atomically move the run to RUNNING if it is in an allowed status."""
+    with DBSession(engine) as session:
+        result = session.execute(
+            update(WorkflowRunRow)
+            .where(WorkflowRunRow.id == run_id)
+            .where(WorkflowRunRow.status.in_([s.value for s in allowed]))  # type: ignore[attr-defined]
+            .values(status=WorkflowStatus.RUNNING.value, updated_at=datetime.utcnow())
+        )
+        session.commit()
+        return result.rowcount == 1
+
+
 async def apply_corrections_and_rerun(
     row: WorkflowRunRow,
     corrections: dict[str, Any],
@@ -715,11 +729,24 @@ async def apply_corrections_and_rerun(
     cr = _as_model(ComplianceResult, values.get("compliance_result"))
     compliance = _merge_issues(None, _carried_over_issues(cr, set(corrections)) + weight_issues(invoice, bl))
 
-    await document_graph.aupdate_state(
-        config,
-        {"invoice": invoice, "bill_of_lading": bl, "compliance_result": compliance},
-        as_node="compliance_reason",
-    )
+    # The status check above is not enough on its own: a second request (a
+    # double-click) can pass it while this one awaits.  Only one may claim
+    # the run, or two re-runs would race on the same checkpoint thread.
+    previous = row.status
+    if not _claim_for_rerun(run_id, allowed):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This run is already being re-run with other corrections",
+        )
+    try:
+        await document_graph.aupdate_state(
+            config,
+            {"invoice": invoice, "bill_of_lading": bl, "compliance_result": compliance},
+            as_node="compliance_reason",
+        )
+    except Exception:
+        _save(run_id, WorkflowStatus(previous))
+        raise
 
     row = _save(run_id, WorkflowStatus.RUNNING) or row
     HITL_RESUMES_TOTAL.inc()

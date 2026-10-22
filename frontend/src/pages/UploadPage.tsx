@@ -4,7 +4,6 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { uploadDocument, createWorkflow, type CountryCode } from "@/lib/api";
-import { storePDF } from "@/lib/pdfStore";
 
 function extractErrMsg(err: unknown): string {
   if (!err) return "Unknown error";
@@ -156,11 +155,8 @@ export default function UploadPage() {
       bl: blFile,
       country: values.country,
     });
-    // Persist PDFs in sessionStorage so the PDF viewer can display them
-    await Promise.all([
-      storePDF(doc.id, "invoice", invoiceFile),
-      storePDF(doc.id, "bl",      blFile),
-    ]);
+    // No local copy of the PDFs is kept: the viewer loads them from the
+    // owner-only upload endpoint.
     await workflowMutation.mutateAsync({ docId: doc.id, country: values.country });
   };
 

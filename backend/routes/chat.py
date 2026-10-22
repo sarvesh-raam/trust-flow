@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 import structlog
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
@@ -88,14 +88,24 @@ def _load_history(row: WorkflowRunRow) -> list[ChatMessage]:
     return [ChatMessage.model_validate(m) for m in json.loads(row.chat_json or "[]")]
 
 
-def _save_history(run_id: str, messages: list[ChatMessage]) -> None:
+def _update_history(run_id: str, change: Callable[[list[ChatMessage]], None]) -> list[ChatMessage]:
+    """Re-read the stored history, apply `change` to it and save it.
+
+    Callers await the LLM or a pipeline re-run before saving, so writing back
+    a copy loaded earlier would undo anything saved in the meantime (e.g. a
+    proposal applied while the next question was being answered).
+    """
     with Session(engine) as session:
         row = session.get(WorkflowRunRow, run_id)
         if row is None:
-            return
-        row.chat_json = json.dumps([m.model_dump(mode="json") for m in messages[-MAX_HISTORY:]])
+            return []
+        messages = _load_history(row)
+        change(messages)
+        messages = messages[-MAX_HISTORY:]
+        row.chat_json = json.dumps([m.model_dump(mode="json") for m in messages])
         session.add(row)
         session.commit()
+        return messages
 
 
 # ---------------------------------------------------------------------------
@@ -235,14 +245,14 @@ async def send_chat(run_id: str, body: ChatRequest, user_id: str = Depends(get_c
     if rejected:
         reply += "\n\n(Some suggested edits were left out because they aren't allowed: " + "; ".join(rejected) + ")"
 
-    history += [
+    new_messages = [
         ChatMessage(role="user", content=body.message),
         ChatMessage(role="assistant", content=reply, proposals=proposals,
                     proposal_status="pending" if proposals else "none"),
     ]
-    _save_history(run_id, history)
+    history = _update_history(run_id, lambda messages: messages.extend(new_messages))
     log.info("chat.message", workflow_id=run_id, user_id=user_id, proposals=len(proposals))
-    return ChatHistory(messages=history[-MAX_HISTORY:])
+    return ChatHistory(messages=history)
 
 
 @router.post(
@@ -269,11 +279,13 @@ async def act_on_proposal(
             row, _as_corrections(message.proposals), background_tasks,
             allowed=(WorkflowStatus.BLOCKED, WorkflowStatus.COMPLETED),
         )
-        message.proposal_status = "applied"
-    else:
-        message.proposal_status = "dismissed"
+    new_status = "applied" if body.action == "apply" else "dismissed"
 
-    _save_history(run_id, history)
+    def mark(messages: list[ChatMessage]) -> None:
+        if index < len(messages):
+            messages[index].proposal_status = new_status
+
+    history = _update_history(run_id, mark)
     log.info("chat.proposal", workflow_id=run_id, user_id=user_id, action=body.action,
              fields=[p.path for p in message.proposals])
     return ChatHistory(messages=history)

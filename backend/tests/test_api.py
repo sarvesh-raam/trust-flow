@@ -157,6 +157,35 @@ def test_resume_rejects_non_positive_weight(client, fake_docs):
     assert r.status_code == 422
 
 
+def test_concurrent_resumes_start_only_one_rerun(client, fake_docs):
+    """A double-clicked resume must not start two re-runs of the same run."""
+    import asyncio
+
+    from fastapi import BackgroundTasks, HTTPException
+
+    from routes import workflow
+
+    fake_docs.bl_weight = 1000
+    run_id, _ = _start_run(client)
+    row = workflow._get_owned(run_id, "alice")
+    tasks = [BackgroundTasks(), BackgroundTasks()]
+
+    async def resume(bt):
+        try:
+            await workflow.apply_corrections_and_rerun(
+                row, {"bill_of_lading.gross_weight_kg": 820}, bt, allowed=(workflow.WorkflowStatus.BLOCKED,),
+            )
+            return 202
+        except HTTPException as exc:
+            return exc.status_code
+
+    async def both():
+        return await asyncio.gather(resume(tasks[0]), resume(tasks[1]))
+
+    assert sorted(client.portal.call(both)) == [202, 409]
+    assert sum(len(bt.tasks) for bt in tasks) == 1
+
+
 def test_resume_corrects_a_non_weight_field(client, fake_docs):
     fake_docs.invoice_date = "15/03/2024"
     run_id, _ = _start_run(client)
