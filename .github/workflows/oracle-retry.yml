@@ -1,0 +1,45 @@
+# Keeps requesting the free Oracle Cloud Ampere server until one is created,
+# then opens an issue with its IP. See deploy/oracle_retry.py.
+# Disable this workflow (Actions → Oracle server retry → ⋯ → Disable) once the
+# server exists; until then runs are cheap no-ops.
+name: Oracle server retry
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: oracle-retry
+  cancel-in-progress: false
+
+jobs:
+  launch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet oci==2.135.0
+      - id: launch
+        run: python deploy/oracle_retry.py
+        env:
+          OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_REGION: ${{ secrets.OCI_REGION }}
+          OCI_PRIVATE_KEY: ${{ secrets.OCI_PRIVATE_KEY }}
+          SSH_PUBLIC_KEY: ${{ secrets.SSH_PUBLIC_KEY }}
+      - if: steps.launch.outputs.created == 'true'
+        run: |
+          gh issue create \
+            --title "Oracle server created: ${{ steps.launch.outputs.ip }}" \
+            --body "The free Oracle server (${{ steps.launch.outputs.size }}) was created. Public IP: **${{ steps.launch.outputs.ip }}**. Continue with deploy/README.md from step 4, and disable the 'Oracle server retry' workflow."
+        env:
+          GH_TOKEN: ${{ github.token }}
