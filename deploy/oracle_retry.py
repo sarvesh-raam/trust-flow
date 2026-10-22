@@ -26,13 +26,18 @@ SHAPE = "VM.Standard.A1.Flex"
 SIZES = [(2, 12), (1, 6)]  # (OCPUs, GB memory), best first
 
 
+def _env(name: str) -> str:
+    # Values pasted into GitHub secrets often carry a trailing newline.
+    return os.environ[name].strip()
+
+
 def _config() -> dict:
     config = {
-        "user": os.environ["OCI_USER_OCID"],
-        "tenancy": os.environ["OCI_TENANCY_OCID"],
-        "fingerprint": os.environ["OCI_FINGERPRINT"],
-        "region": os.environ["OCI_REGION"],
-        "key_content": os.environ["OCI_PRIVATE_KEY"],
+        "user": _env("OCI_USER_OCID"),
+        "tenancy": _env("OCI_TENANCY_OCID"),
+        "fingerprint": _env("OCI_FINGERPRINT"),
+        "region": _env("OCI_REGION"),
+        "key_content": _env("OCI_PRIVATE_KEY") + "\n",
     }
     oci.config.validate_config(config)
     return config
@@ -126,7 +131,7 @@ def main() -> None:
                 create_vnic_details=oci.core.models.CreateVnicDetails(
                     subnet_id=subnet_id, assign_public_ip=True,
                 ),
-                metadata={"ssh_authorized_keys": os.environ["SSH_PUBLIC_KEY"].strip()},
+                metadata={"ssh_authorized_keys": _env("SSH_PUBLIC_KEY")},
             )
             try:
                 instance = compute.launch_instance(details).data
